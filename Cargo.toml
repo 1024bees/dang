@@ -1,0 +1,15 @@
+[package]
+name = "dang"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.86"
+gdbstub = "0.7.1"
+gdbstub_arch = "0.3.0"
+wellen = { git = "https://github.com/1024bees/wellen", branch = "experiments" }
+num-bigint = "0.4.6"
+serde = { version = "1.0.210", features = ["derive"] }
+serde_yaml = "0.9.34"
