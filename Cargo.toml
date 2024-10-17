@@ -13,3 +13,4 @@ wellen = { git = "https://github.com/1024bees/wellen", branch = "experiments" }
 num-bigint = "0.4.6"
 serde = { version = "1.0.210", features = ["derive"] }
 serde_yaml = "0.9.34"
+argh = "0.1.12"

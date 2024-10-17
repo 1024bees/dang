@@ -13,7 +13,8 @@ use std::cmp::Ordering;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 pub struct Loaded {
-    waves: RequiredWaves,
+    pub(crate) waves: RequiredWaves,
+    pub(crate) cursor: WaveCursor,
 }
 const LOAD_OPTS: LoadOptions = LoadOptions {
     multi_thread: true,
@@ -165,9 +166,15 @@ impl Loaded {
             all_changes_together.push(gpr.time_indices());
         }
         let all_changes = merge_changes(all_changes_together);
+        let cursor = WaveCursor {
+            time_idx: 0,
+            all_changes,
+            all_times: body.time_table,
+        };
 
         Ok(Loaded {
             waves: RequiredWaves { pc, grps },
+            cursor,
         })
     }
 }

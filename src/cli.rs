@@ -2,9 +2,9 @@
 //! `arm-none-eabi-cc -march=armv4t`. It's not modeled after any real-world
 //! system.
 
-use crate::waveloader;
+use crate::{runtime, waveloader};
 
-use super::Waver;
+use super::runtime::Waver;
 use gdbstub::conn::Connection;
 use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::run_blocking;
@@ -13,12 +13,30 @@ use gdbstub::stub::GdbStub;
 use gdbstub::stub::SingleThreadStopReason;
 use gdbstub::target::Target;
 use gdbstub::{common::Signal, target::ext::extended_mode::ExtendedMode};
-use std::net::TcpListener;
 use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::net::UnixListener;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
+use std::{net::TcpListener, path::PathBuf};
+
+use argh::FromArgs;
+
+#[derive(FromArgs, Debug, Clone)]
+/// CLI to dang Dang
+struct DangArgs {
+    #[argh(option)]
+    /// path to the vcd, fst or ghw file that will be stepped through
+    wave_path: PathBuf,
+
+    #[argh(option)]
+    /// path to a signal mapping file
+    mapping_path: PathBuf,
+
+    #[argh(switch)]
+    /// controls if we use a UDS
+    uds: bool,
+}
 
 type DynResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -52,9 +70,9 @@ fn wait_for_uds(path: &str) -> DynResult<UnixStream> {
     Ok(stream)
 }
 
-enum EmuGdbEventLoop {}
+enum DangGdbEventLoop {}
 
-impl run_blocking::BlockingEventLoop for EmuGdbEventLoop {
+impl run_blocking::BlockingEventLoop for DangGdbEventLoop {
     type Target = Waver;
     type Connection = Box<dyn ConnectionExt<Error = std::io::Error>>;
     type StopReason = SingleThreadStopReason<u32>;
@@ -100,30 +118,18 @@ impl run_blocking::BlockingEventLoop for EmuGdbEventLoop {
         };
 
         match target.run(poll_incoming_data) {
-            emu::RunEvent::IncomingData => {
+            runtime::RunEvent::IncomingData => {
                 let byte = conn
                     .read()
                     .map_err(run_blocking::WaitForStopReasonError::Connection)?;
                 Ok(run_blocking::Event::IncomingData(byte))
             }
-            emu::RunEvent::Event(event) => {
-                use gdbstub::target::ext::breakpoints::WatchKind;
-
+            runtime::RunEvent::Event(event) => {
                 // translate emulator stop reason into GDB stop reason
                 let stop_reason = match event {
-                    emu::Event::DoneStep => SingleThreadStopReason::DoneStep,
-                    emu::Event::Halted => SingleThreadStopReason::Terminated(Signal::SIGSTOP),
-                    emu::Event::Break => SingleThreadStopReason::SwBreak(()),
-                    emu::Event::WatchWrite(addr) => SingleThreadStopReason::Watch {
-                        tid: (),
-                        kind: WatchKind::Write,
-                        addr,
-                    },
-                    emu::Event::WatchRead(addr) => SingleThreadStopReason::Watch {
-                        tid: (),
-                        kind: WatchKind::Read,
-                        addr,
-                    },
+                    runtime::Event::DoneStep => SingleThreadStopReason::DoneStep,
+                    runtime::Event::Halted => SingleThreadStopReason::Terminated(Signal::SIGSTOP),
+                    runtime::Event::Break => SingleThreadStopReason::SwBreak(()),
                 };
 
                 Ok(run_blocking::Event::TargetStopped(stop_reason))
@@ -142,21 +148,24 @@ impl run_blocking::BlockingEventLoop for EmuGdbEventLoop {
     }
 }
 
-fn start() -> DynResult<()> {
-    let path = String::default();
-    let map = waveloader::Mapping::default();
+pub fn start(wave_path: PathBuf, mapping_path: PathBuf, use_uds: bool) -> DynResult<()> {
+    let DangArgs {
+        wave_path,
+        mapping_path,
+        uds,
+    } = argh::from_env();
 
-    let mut emu = waveloader::Loaded::create_loaded_waves(path, &map);
+    let mut emu = Waver::new(wave_path, mapping_path).expect("Could not create wave runtime");
 
     let connection: Box<dyn ConnectionExt<Error = std::io::Error>> = {
-        if std::env::args().nth(1) == Some("--uds".to_string()) {
+        if use_uds {
             #[cfg(not(unix))]
             {
                 return Err("Unix Domain Sockets can only be used on Unix".into());
             }
             #[cfg(unix)]
             {
-                Box::new(wait_for_uds("/tmp/armv4t_gdb")?)
+                Box::new(wait_for_uds("/tmp/dang")?)
             }
         } else {
             Box::new(wait_for_tcp(9001)?)
@@ -165,7 +174,7 @@ fn start() -> DynResult<()> {
 
     let gdb = GdbStub::new(connection);
 
-    match gdb.run_blocking::<EmuGdbEventLoop>(&mut emu) {
+    match gdb.run_blocking::<DangGdbEventLoop>(&mut emu) {
         Ok(disconnect_reason) => match disconnect_reason {
             DisconnectReason::Disconnect => {
                 println!("GDB client has disconnected. Running to completion...");
@@ -193,8 +202,7 @@ fn start() -> DynResult<()> {
         }
     }
 
-    let ret = emu.cpu.reg_get(armv4t_emu::Mode::User, 0);
-    println!("Program completed. Return value: {}", ret);
+    println!("Program completed");
 
     Ok(())
 }

@@ -4,8 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::convert::Mappable;
 use crate::waveloader::{self, WellenSignalExt};
+use crate::{convert::Mappable, waveloader::Loaded};
 use gdbstub::common::Pid;
 use wellen::{TimeTable, TimeTableIdx};
 
@@ -14,8 +14,9 @@ pub enum Event {
     DoneStep,
     Halted,
     Break,
-    WatchWrite(u32),
-    WatchRead(u32),
+    //TODO -- add this in
+    //WatchWrite(u32),
+    //WatchRead(u32),
 }
 
 pub struct WaveCursor {
@@ -43,14 +44,94 @@ impl Waver {
         let mut mapping = String::new();
         let _ = std::fs::File::open(signal_mapping_path)?.read_to_string(&mut mapping)?;
         let mapping = serde_yaml::from_str(mapping.as_str())?;
-        let loaded = waveloader::Loaded::create_loaded_waves(
+        let Loaded { cursor, waves } = waveloader::Loaded::create_loaded_waves(
             wave_path.to_string_lossy().to_string(),
             &mapping,
         )?;
+        Ok(Waver {
+            waves,
+            cursor,
+            map: mapping,
+            breakpoints: Vec::new(),
+            exec_mode: ExecMode::Step,
+        })
     }
     pub fn get_current_pc<T: Mappable>(&self) -> T {
         T::from_signal(self.waves.pc.get_val(self.cursor.time_idx))
     }
+
+    /// single-step the interpreter
+    pub fn step(&mut self) -> Option<Event> {
+        let maybe_next = self.waves.pc.try_get_next_val(self.cursor.time_idx);
+        if let Some((maybe_pc_sig, idx)) = maybe_next {
+            let maybe_pc = u32::try_from_signal(maybe_pc_sig);
+            if let Some(pc) = maybe_pc {
+                if self.breakpoints.contains(&pc) {
+                    return Some(Event::Break);
+                }
+                return None;
+            } else {
+                let sig_str = maybe_pc_sig.to_bit_string().unwrap();
+                eprintln!("PC could not be extracted as a u32 from the PC signal -- extracted value is {sig_str}");
+                return Some(Event::Halted);
+            }
+        } else {
+            return Some(Event::Halted);
+        }
+    }
+
+    /// run the emulator in accordance with the currently set `ExecutionMode`.
+    ///
+    /// since the emulator runs in the same thread as the GDB loop, the emulator
+    /// will use the provided callback to poll the connection for incoming data
+    /// every 1024 steps.
+    pub fn run(&mut self, mut poll_incoming_data: impl FnMut() -> bool) -> RunEvent {
+        match self.exec_mode {
+            ExecMode::Step => RunEvent::Event(self.step().unwrap_or(Event::DoneStep)),
+            ExecMode::Continue => {
+                let mut cycles = 0;
+                loop {
+                    if cycles % 1024 == 0 {
+                        // poll for incoming data
+                        if poll_incoming_data() {
+                            break RunEvent::IncomingData;
+                        }
+                    }
+                    cycles += 1;
+
+                    if let Some(event) = self.step() {
+                        break RunEvent::Event(event);
+                    };
+                }
+            }
+            // just continue, but with an extra PC check
+            ExecMode::RangeStep(start, end) => {
+                let mut cycles = 0;
+                loop {
+                    if cycles % 1024 == 0 {
+                        // poll for incoming data
+                        if poll_incoming_data() {
+                            break RunEvent::IncomingData;
+                        }
+                    }
+                    cycles += 1;
+
+                    if let Some(event) = self.step() {
+                        break RunEvent::Event(event);
+                    };
+
+                    if !(start..end).contains(&self.get_current_pc()) {
+                        break RunEvent::Event(Event::DoneStep);
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub enum RunEvent {
+    IncomingData,
+    Event(Event),
 }
 
 pub struct RequiredWaves {
