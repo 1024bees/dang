@@ -2,7 +2,7 @@
 //! `arm-none-eabi-cc -march=armv4t`. It's not modeled after any real-world
 //! system.
 
-use crate::{runtime, waveloader};
+use crate::runtime;
 
 use super::runtime::Waver;
 use gdbstub::conn::Connection;
@@ -148,7 +148,7 @@ impl run_blocking::BlockingEventLoop for DangGdbEventLoop {
     }
 }
 
-pub fn start(wave_path: PathBuf, mapping_path: PathBuf, use_uds: bool) -> DynResult<()> {
+pub fn start() -> DynResult<()> {
     let DangArgs {
         wave_path,
         mapping_path,
@@ -158,7 +158,7 @@ pub fn start(wave_path: PathBuf, mapping_path: PathBuf, use_uds: bool) -> DynRes
     let mut emu = Waver::new(wave_path, mapping_path).expect("Could not create wave runtime");
 
     let connection: Box<dyn ConnectionExt<Error = std::io::Error>> = {
-        if use_uds {
+        if uds {
             #[cfg(not(unix))]
             {
                 return Err("Unix Domain Sockets can only be used on Unix".into());

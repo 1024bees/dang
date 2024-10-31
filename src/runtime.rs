@@ -1,12 +1,11 @@
 use std::{
-    collections::HashMap,
     io::Read,
-    path::{Path, PathBuf},
+    path::{PathBuf},
 };
 
 use crate::waveloader::{self, WellenSignalExt};
 use crate::{convert::Mappable, waveloader::Loaded};
-use gdbstub::common::Pid;
+
 use wellen::{TimeTable, TimeTableIdx};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -63,20 +62,20 @@ impl Waver {
     /// single-step the interpreter
     pub fn step(&mut self) -> Option<Event> {
         let maybe_next = self.waves.pc.try_get_next_val(self.cursor.time_idx);
-        if let Some((maybe_pc_sig, idx)) = maybe_next {
+        if let Some((maybe_pc_sig, _idx)) = maybe_next {
             let maybe_pc = u32::try_from_signal(maybe_pc_sig);
             if let Some(pc) = maybe_pc {
                 if self.breakpoints.contains(&pc) {
                     return Some(Event::Break);
                 }
-                return None;
+                None
             } else {
                 let sig_str = maybe_pc_sig.to_bit_string().unwrap();
                 eprintln!("PC could not be extracted as a u32 from the PC signal -- extracted value is {sig_str}");
-                return Some(Event::Halted);
+                Some(Event::Halted)
             }
         } else {
-            return Some(Event::Halted);
+            Some(Event::Halted)
         }
     }
 

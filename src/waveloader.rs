@@ -1,8 +1,4 @@
-use crate::{
-    convert::Mappable,
-    runtime::{RequiredWaves, WaveCursor},
-};
-use std::collections::HashMap;
+use crate::runtime::{RequiredWaves, WaveCursor};
 
 use anyhow::{anyhow, Result};
 use wellen::{
@@ -67,11 +63,7 @@ impl WellenSignalExt for Signal {
 
     fn try_get_val(&self, idx: TimeTableIdx) -> Option<SignalValue<'_>> {
         let data_offset = self.get_offset(idx);
-        if let Some(offset) = data_offset {
-            Some(self.get_value_at(&offset, 0))
-        } else {
-            None
-        }
+        data_offset.map(|offset| self.get_value_at(&offset, 0))
     }
 }
 

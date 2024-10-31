@@ -1,13 +1,12 @@
-use std::{io::Write, num::NonZeroUsize};
+use std::{io::Write};
 
 use crate::runtime::{ExecMode, Waver};
 use crate::waveloader;
-use crate::{convert::Mappable, waveloader::Loaded};
+use crate::{convert::Mappable};
 use gdbstub::{
     arch::Arch,
     target::{
         ext::{
-            base::singlethread::SingleThreadSingleStep,
             breakpoints::Breakpoints,
             monitor_cmd::ConsoleOutput,
             section_offsets::{Offsets, SectionOffsets},
@@ -15,7 +14,7 @@ use gdbstub::{
         TargetError,
     },
 };
-use gdbstub::{common::Pid, target::ext::base::singlethread::SingleThreadResume};
+use gdbstub::{target::ext::base::singlethread::SingleThreadResume};
 use gdbstub::{
     common::Signal,
     target::{self, Target, TargetResult},
@@ -24,8 +23,6 @@ use gdbstub::{
     outputln,
     target::ext::{
         base::singlethread::SingleThreadBase,
-        exec_file::ExecFile,
-        extended_mode::{Args, AttachKind, ExtendedMode, ShouldTerminate},
         monitor_cmd::MonitorCmd,
     },
 };
@@ -217,7 +214,7 @@ impl SingleThreadBase for Waver {
         Ok(())
     }
 
-    fn write_registers(&mut self, regs: &<Riscv32 as Arch>::Registers) -> TargetResult<(), Self> {
+    fn write_registers(&mut self, _regs: &<Riscv32 as Arch>::Registers) -> TargetResult<(), Self> {
         // We do not support writing registers because we have read only signals
         // We are pulling this from a waveform :)
         Err(TargetError::NonFatal)
@@ -231,12 +228,12 @@ impl SingleThreadBase for Waver {
         Some(self)
     }
 
-    fn read_addrs(&mut self, start_addr: u32, data: &mut [u8]) -> TargetResult<usize, Self> {
+    fn read_addrs(&mut self, _start_addr: u32, _data: &mut [u8]) -> TargetResult<usize, Self> {
         //TODO: add support for reading memory eventually, eventually
         Ok(0)
     }
 
-    fn write_addrs(&mut self, start_addr: u32, data: &[u8]) -> TargetResult<(), Self> {
+    fn write_addrs(&mut self, _start_addr: u32, _data: &[u8]) -> TargetResult<(), Self> {
         // We do not support writing registers because we have read only signals
         Err(TargetError::NonFatal)
     }
@@ -323,8 +320,8 @@ impl target::ext::base::single_register_access::SingleRegisterAccess<()> for Wav
     fn write_register(
         &mut self,
         _tid: (),
-        reg_id: <Riscv32 as Arch>::RegId,
-        val: &[u8],
+        _reg_id: <Riscv32 as Arch>::RegId,
+        _val: &[u8],
     ) -> TargetResult<(), Self> {
         Err(().into())
     }
