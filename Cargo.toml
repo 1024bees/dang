@@ -9,8 +9,12 @@ edition = "2021"
 anyhow = "1.0.86"
 gdbstub = "0.7.1"
 gdbstub_arch = "0.3.0"
-wellen = { git = "https://github.com/1024bees/wellen", branch = "experiments" }
+wellen = { git = "https://github.com/1024bees/wellen", branch = "signal-builders" }
+pywellen = { git = "https://github.com/1024bees/wellen", branch = "signal-builders" }
+
 num-bigint = "0.4.6"
 serde = { version = "1.0.210", features = ["derive"] }
 serde_yaml = "0.9.34"
 argh = "0.1.12"
+
+pyo3 = { version = "0.21.1", features = ["num-bigint"] }

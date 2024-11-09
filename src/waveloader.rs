@@ -1,13 +1,16 @@
 use crate::runtime::{RequiredWaves, WaveCursor};
 
 use anyhow::{anyhow, Result};
+use pyo3::prelude::*;
+use pyo3::PyResult;
+use pywellen::{self, pywellen as doggy};
 use wellen::{
     self, GetItem, Hierarchy, LoadOptions, Signal, SignalRef, SignalValue, TimeTableIdx, VarRef,
 };
 
-use std::cmp::Ordering;
-use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::{cmp::Ordering, collections::HashMap};
+use std::{cmp::Reverse, sync::Once};
 pub struct Loaded {
     pub(crate) waves: RequiredWaves,
     pub(crate) cursor: WaveCursor,
@@ -168,5 +171,88 @@ impl Loaded {
             waves: RequiredWaves { pc, grps },
             cursor,
         })
+    }
+}
+
+static INIT: Once = std::sync::Once::new();
+
+fn initialize() {
+    INIT.call_once(|| {
+        pyo3::append_to_inittab!(doggy);
+    });
+}
+
+pub fn execute_get_signals(
+    script: &str,
+    fn_name: &str,
+    wave_path: String,
+) -> PyResult<HashMap<String, wellen::Signal>> {
+    initialize();
+    pyo3::prepare_freethreaded_python();
+    let val: PyResult<HashMap<String, pywellen::Signal>> = Python::with_gil(|py| {
+        let activators = PyModule::from_code_bound(py, script, "signal_get.py", "signal_get")?;
+        let wave = Bound::new(py, pywellen::Waveform::new(wave_path, true, true)?)?;
+
+        let all_waves: HashMap<String, pywellen::Signal> =
+            activators.getattr(fn_name)?.call1((wave,))?.extract()?;
+
+        Ok(all_waves)
+    });
+    let val = val?
+        .into_iter()
+        .map(|(name, signal)| (name, signal.to_wellen_signal().unwrap()))
+        .fold(HashMap::new(), |mut mapper, val| {
+            mapper.insert(val.0, val.1);
+            mapper
+        });
+    Ok(val)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_execute_get_signals() {
+        // Get the path to the test script
+        let cargo_manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let script_path = PathBuf::from(cargo_manifest_dir).join("test_data/ibex/signal_get.py");
+
+        // Read the script content
+        let script_content = fs::read_to_string(script_path).expect("Failed to read script file");
+
+        // Define the function name and wave path
+        let fn_name = "get_signals";
+        let wave_path = PathBuf::from(cargo_manifest_dir).join("test_data/ibex/sim.fst");
+
+        // Call the function
+        let result = execute_get_signals(
+            &script_content,
+            fn_name,
+            wave_path.to_string_lossy().to_string(),
+        );
+
+        let result = execute_get_signals(
+            &script_content,
+            fn_name,
+            wave_path.to_string_lossy().to_string(),
+        );
+
+        // Check the result
+        match result {
+            Ok(signals) => {
+                // Perform assertions on the signals
+                assert!(!signals.is_empty(), "Signals should not be empty");
+                // Add more assertions as needed
+                //
+                assert!(
+                    signals.values().next().unwrap().width().unwrap() == 1,
+                    "Signals should not be empty"
+                );
+            }
+            Err(e) => panic!("Function execution failed: {:?}", e),
+        }
     }
 }
