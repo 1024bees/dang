@@ -1,0 +1,3 @@
+[submodule "vendor/Python-3.10"]
+	path = vendor/Python-3.10
+	url = https://github.com/python/cpython.git
