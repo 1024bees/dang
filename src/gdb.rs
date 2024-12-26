@@ -1,8 +1,9 @@
-use std::{io::Write};
+use std::io::Write;
 
+use crate::convert::Mappable;
 use crate::runtime::{ExecMode, Waver};
 use crate::waveloader;
-use crate::{convert::Mappable};
+use gdbstub::target::ext::base::singlethread::SingleThreadResume;
 use gdbstub::{
     arch::Arch,
     target::{
@@ -14,17 +15,13 @@ use gdbstub::{
         TargetError,
     },
 };
-use gdbstub::{target::ext::base::singlethread::SingleThreadResume};
 use gdbstub::{
     common::Signal,
     target::{self, Target, TargetResult},
 };
 use gdbstub::{
     outputln,
-    target::ext::{
-        base::singlethread::SingleThreadBase,
-        monitor_cmd::MonitorCmd,
-    },
+    target::ext::{base::singlethread::SingleThreadBase, monitor_cmd::MonitorCmd},
 };
 use gdbstub_arch::riscv::{reg::id::RiscvRegId, Riscv32};
 use waveloader::WellenSignalExt;
@@ -208,7 +205,7 @@ impl SingleThreadBase for Waver {
         regs.pc = u32::from_signal(self.waves.pc.get_val(idx));
 
         for i in 0..32 {
-            regs.x[i] = u32::from_signal(self.waves.grps[i].get_val(idx));
+            regs.x[i] = u32::from_signal(self.waves.gprs[i].get_val(idx));
         }
 
         Ok(())
@@ -306,7 +303,7 @@ impl target::ext::base::single_register_access::SingleRegisterAccess<()> for Wav
         match reg_id {
             RiscvRegId::Gpr(grp_id) => {
                 let val =
-                    u32::from_signal(self.waves.grps[grp_id as usize].get_val(idx)).to_be_bytes();
+                    u32::from_signal(self.waves.gprs[grp_id as usize].get_val(idx)).to_be_bytes();
                 // Use the write method directly on buf
                 match buf.write(&val) {
                     Ok(bytes_written) => Ok(bytes_written), // Return the number of bytes written

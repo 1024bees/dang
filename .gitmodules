@@ -1,3 +1,6 @@
 [submodule "vendor/Python-3.10"]
 	path = vendor/Python-3.10
 	url = https://github.com/python/cpython.git
+[submodule "wellen"]
+	path = wellen
+	url = https://github.com/1024bees/wellen.git

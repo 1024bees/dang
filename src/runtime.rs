@@ -1,7 +1,4 @@
-use std::{
-    io::Read,
-    path::{PathBuf},
-};
+use std::{io::Read, path::PathBuf};
 
 use crate::waveloader::{self, WellenSignalExt};
 use crate::{convert::Mappable, waveloader::Loaded};
@@ -33,24 +30,19 @@ pub enum ExecMode {
 pub struct Waver {
     pub waves: RequiredWaves,
     pub cursor: WaveCursor,
-    pub map: waveloader::Mapping,
+
     pub breakpoints: Vec<u32>,
     pub exec_mode: ExecMode,
 }
 
 impl Waver {
-    pub fn new(wave_path: PathBuf, signal_mapping_path: PathBuf) -> anyhow::Result<Self> {
-        let mut mapping = String::new();
-        let _ = std::fs::File::open(signal_mapping_path)?.read_to_string(&mut mapping)?;
-        let mapping = serde_yaml::from_str(mapping.as_str())?;
-        let Loaded { cursor, waves } = waveloader::Loaded::create_loaded_waves(
-            wave_path.to_string_lossy().to_string(),
-            &mapping,
-        )?;
+    pub fn new(wave_path: PathBuf, py_file_path: PathBuf) -> anyhow::Result<Self> {
+        let Loaded { cursor, waves } =
+            waveloader::Loaded::create_loaded_waves(wave_path, py_file_path)?;
         Ok(Waver {
             waves,
             cursor,
-            map: mapping,
+
             breakpoints: Vec::new(),
             exec_mode: ExecMode::Step,
         })
@@ -135,7 +127,7 @@ pub enum RunEvent {
 
 pub struct RequiredWaves {
     pub pc: wellen::Signal,
-    pub grps: Vec<wellen::Signal>,
+    pub gprs: Vec<wellen::Signal>,
     //fprs: Option<[wellen::Signal; 32]>,
     //csrs: HashMap<u32, wellen::Signal>,
 }

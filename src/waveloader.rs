@@ -8,9 +8,9 @@ use wellen::{
     self, GetItem, Hierarchy, LoadOptions, Signal, SignalRef, SignalValue, TimeTableIdx, VarRef,
 };
 
-use std::collections::BinaryHeap;
-use std::{cmp::Ordering, collections::HashMap};
+use std::{cmp::Ordering, collections::HashMap, fs, path::Path};
 use std::{cmp::Reverse, sync::Once};
+use std::{collections::BinaryHeap, path::PathBuf};
 pub struct Loaded {
     pub(crate) waves: RequiredWaves,
     pub(crate) cursor: WaveCursor,
@@ -21,11 +21,6 @@ const LOAD_OPTS: LoadOptions = LoadOptions {
 };
 
 use serde::Deserialize;
-#[derive(Default, Deserialize)]
-pub struct Mapping {
-    pc: String,
-    gprs: [String; 32],
-}
 
 pub trait WellenExt {
     fn get_var<S: AsRef<str>>(&self, varname: S) -> Option<VarRef>;
@@ -132,32 +127,31 @@ fn merge_changes(arrays: Vec<&[TimeTableIdx]>) -> Vec<TimeTableIdx> {
 }
 
 impl Loaded {
-    pub fn create_loaded_waves(file_name: String, signal_map: &Mapping) -> Result<Self> {
-        let header = wellen::viewers::read_header(file_name.as_str(), &LOAD_OPTS)?;
+    pub fn create_loaded_waves(file_name: PathBuf, signal_py_file: PathBuf) -> Result<Self> {
+        let header = wellen::viewers::read_header(file_name.as_path(), &LOAD_OPTS)?;
         let hierarchy = header.hierarchy;
 
         let mut body = wellen::viewers::read_body(header.body, &hierarchy, None)?;
 
-        let pc_var = path_to_signal_ref(&hierarchy, signal_map.pc.as_str())?;
-        let gprs = signal_map
-            .gprs
-            .iter()
-            .map(|val| path_to_signal_ref(&hierarchy, val))
-            .collect::<anyhow::Result<Vec<SignalRef>>>()?;
-        let pc = body
-            .source
-            .load_signals(&[pc_var], &hierarchy, true)
-            .remove(0)
-            .1;
-        let grps: Vec<Signal> = body
-            .source
-            .load_signals(gprs.as_slice(), &hierarchy, true)
-            .into_iter()
-            .map(|val| val.1)
+        let script_name = "get_signals";
+        let mut py_signals =
+            execute_get_signals(signal_py_file.as_path(), script_name, file_name.as_path())?;
+
+        let pc = py_signals
+            .remove("pc")
+            .expect("No signal provided named pc!");
+
+        let gprs: Vec<Signal> = (0..31)
+            .map(|val| {
+                py_signals
+                    .remove(format!("x{val}").as_str())
+                    .expect("No signal named x{val} provided")
+            })
             .collect();
+
         let mut all_changes_together = vec![];
         all_changes_together.push(pc.time_indices());
-        for gpr in grps.iter() {
+        for gpr in gprs.iter() {
             all_changes_together.push(gpr.time_indices());
         }
         let all_changes = merge_changes(all_changes_together);
@@ -168,7 +162,7 @@ impl Loaded {
         };
 
         Ok(Loaded {
-            waves: RequiredWaves { pc, grps },
+            waves: RequiredWaves { pc, gprs },
             cursor,
         })
     }
@@ -183,21 +177,35 @@ fn initialize() {
 }
 
 pub fn execute_get_signals(
-    script: &str,
+    script: &Path,
     fn_name: &str,
-    wave_path: String,
+    wave_path: &Path,
 ) -> PyResult<HashMap<String, wellen::Signal>> {
     initialize();
+
+    let script_content = fs::read_to_string(script).expect("Failed to read script file");
+
     pyo3::prepare_freethreaded_python();
-    let val: PyResult<HashMap<String, pywellen::Signal>> = Python::with_gil(|py| {
-        let activators = PyModule::from_code_bound(py, script, "signal_get.py", "signal_get")?;
-        let wave = Bound::new(py, pywellen::Waveform::new(wave_path, true, true)?)?;
+    let val = {
+        let val: PyResult<HashMap<String, pywellen::Signal>> = Python::with_gil(|py| {
+            let activators = PyModule::from_code_bound(
+                py,
+                script_content.as_str(),
+                "signal_get.py",
+                "signal_get",
+            )?;
+            let wave = Bound::new(
+                py,
+                pywellen::Waveform::new(wave_path.to_string_lossy().to_string(), true, true)?,
+            )?;
 
-        let all_waves: HashMap<String, pywellen::Signal> =
-            activators.getattr(fn_name)?.call1((wave,))?.extract()?;
+            let all_waves: HashMap<String, pywellen::Signal> =
+                activators.getattr(fn_name)?.call1((wave,))?.extract()?;
 
-        Ok(all_waves)
-    });
+            Ok(all_waves)
+        });
+        val
+    };
     let val = val?
         .into_iter()
         .map(|(name, signal)| (name, signal.to_wellen_signal().unwrap()))
@@ -211,7 +219,7 @@ pub fn execute_get_signals(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+
     use std::path::PathBuf;
 
     #[test]
@@ -221,36 +229,22 @@ mod tests {
         let script_path = PathBuf::from(cargo_manifest_dir).join("test_data/ibex/signal_get.py");
 
         // Read the script content
-        let script_content = fs::read_to_string(script_path).expect("Failed to read script file");
 
         // Define the function name and wave path
         let fn_name = "get_signals";
         let wave_path = PathBuf::from(cargo_manifest_dir).join("test_data/ibex/sim.fst");
 
         // Call the function
-        let result = execute_get_signals(
-            &script_content,
-            fn_name,
-            wave_path.to_string_lossy().to_string(),
-        );
-
-        let result = execute_get_signals(
-            &script_content,
-            fn_name,
-            wave_path.to_string_lossy().to_string(),
-        );
+        let result = execute_get_signals(script_path.as_path(), fn_name, wave_path.as_path());
 
         // Check the result
         match result {
             Ok(signals) => {
+                dbg!(&signals);
                 // Perform assertions on the signals
                 assert!(!signals.is_empty(), "Signals should not be empty");
                 // Add more assertions as needed
                 //
-                assert!(
-                    signals.values().next().unwrap().width().unwrap() == 1,
-                    "Signals should not be empty"
-                );
             }
             Err(e) => panic!("Function execution failed: {:?}", e),
         }

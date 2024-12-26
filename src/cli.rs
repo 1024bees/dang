@@ -5,6 +5,7 @@
 use crate::runtime;
 
 use super::runtime::Waver;
+use argh::FromArgs;
 use gdbstub::conn::Connection;
 use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::run_blocking;
@@ -19,8 +20,6 @@ use std::os::unix::net::UnixListener;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::{net::TcpListener, path::PathBuf};
-
-use argh::FromArgs;
 
 #[derive(FromArgs, Debug, Clone)]
 /// CLI to dang Dang
