@@ -1,0 +1,47 @@
+# Makefile.toml
+
+[tasks.build-python]
+description = "Build CPython 3.10 statically"
+script = [
+    # 1) Create a dedicated build dir under target
+    "mkdir -p target/python-build",
+    # 2) Run configure out-of-tree
+    "pushd target/python-build && ../../vendor/Python-3.10/configure --disable-shared --enable-optimizations --with-lto --without-pymalloc --prefix=/unused && popd",
+    # 3) Run make
+    "pushd target/python-build && make -j8 && popd",
+]
+
+
+[tasks.export-env]
+description = "Export env vars for pyo3 "
+script = '''
+ABSOLUTE_PATH=$(realpath .)
+cat > python_env.txt << EOF
+implementation=CPython
+version=3.10
+shared=false
+abi3=true
+lib_name=python3.10
+lib_dir=$ABSOLUTE_PATH/target/python-build/
+executable=$ABSOLUTE_PATH/target/python-build/python.exe
+pointer_width=64
+build_flags=
+suppress_build_script_link_lines=false
+EOF
+'''
+dependencies = ["build-python"]
+env = { "PYO3_CONFIG_FILE" = "${CARGO_MAKE_WORKING_DIRECTORY}/python_env.txt" }
+
+# or debug build as you prefer
+
+# Finally build your top-level binary
+[tasks.build-binary]
+description = "Build the final binary that embeds Python + uses pywellen"
+command = "cargo"
+env = { "PYO3_CONFIG_FILE" = "${CARGO_MAKE_WORKING_DIRECTORY}/python_env.txt" }
+dependencies = ["build-python", "export-env"]
+args = ["build", "--release"]
+
+# This is the main flow: we specify steps in order
+[tasks.default]
+alias = "build-binary"
