@@ -1,3 +1,4 @@
+use anyhow::Context;
 use num_bigint::BigUint;
 use wellen::SignalValue;
 
@@ -14,7 +15,14 @@ impl Mappable for BigUint {
 pub trait Mappable: Sized {
     fn try_from_signal(signal_value: SignalValue<'_>) -> Option<Self>;
     fn from_signal(signal_value: SignalValue<'_>) -> Self {
-        Self::try_from_signal(signal_value).unwrap()
+        Self::try_from_signal(signal_value)
+            .with_context(|| {
+                format!(
+                    "Failed to convert signal value to {:?}",
+                    signal_value.to_bit_string()
+                )
+            })
+            .expect("Failed to convert signal value to Mappable")
     }
 
     fn bit_width(&self) -> u32 {

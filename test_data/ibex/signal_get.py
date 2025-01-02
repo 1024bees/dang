@@ -9,8 +9,9 @@ def get_signals(wave: Waveform):
     gprs = {
         f"x{i}": wave.get_signal_from_path(
             f"TOP.ibex_simple_system.u_top.u_ibex_top.gen_regfile_ff.register_file_i.rf_reg.[{i}]"
-        )
+        ).sliced(0, 31)
         for i in range(31)
     }
+    print(gprs)
     rv = {"pc": pc, **gprs}
     return rv

@@ -302,8 +302,9 @@ impl target::ext::base::single_register_access::SingleRegisterAccess<()> for Wav
         let idx = self.cursor.time_idx;
         match reg_id {
             RiscvRegId::Gpr(grp_id) => {
-                let val =
-                    u32::from_signal(self.waves.gprs[grp_id as usize].get_val(idx)).to_be_bytes();
+                let val = self.waves.gprs[grp_id as usize].get_val(idx);
+                println!("width is {:?}", self.waves.gprs[grp_id as usize].width());
+                let val = u32::from_signal(val).to_be_bytes();
                 // Use the write method directly on buf
                 match buf.write(&val) {
                     Ok(bytes_written) => Ok(bytes_written), // Return the number of bytes written
