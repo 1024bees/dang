@@ -61,7 +61,9 @@ impl WellenSignalExt for Signal {
 
     fn try_get_val(&self, idx: TimeTableIdx) -> Option<SignalValue<'_>> {
         let data_offset = self.get_offset(idx);
-        data_offset.map(|offset| self.get_value_at(&offset, 0))
+        let val = data_offset.map(|offset| self.get_value_at(&offset, 0));
+
+        val
     }
 }
 
@@ -160,6 +162,7 @@ impl Loaded {
             all_changes,
             all_times: body.time_table,
         };
+        
 
         Ok(Loaded {
             waves: RequiredWaves { pc, gprs },

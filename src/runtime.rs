@@ -21,6 +21,7 @@ pub struct WaveCursor {
     pub all_times: TimeTable,
 }
 
+#[derive(Debug)]
 pub enum ExecMode {
     Step,
     Continue,
@@ -36,6 +37,11 @@ pub struct Waver {
 }
 
 impl Waver {
+    pub fn reset(&mut self) {
+        self.cursor.time_idx = 0;
+        
+    }
+
     pub fn new(wave_path: PathBuf, py_file_path: PathBuf) -> anyhow::Result<Self> {
         let Loaded { cursor, waves } =
             waveloader::Loaded::create_loaded_waves(wave_path, py_file_path)?;
@@ -51,22 +57,33 @@ impl Waver {
         T::from_signal(self.waves.pc.get_val(self.cursor.time_idx))
     }
 
+    pub fn next_pc(&mut self) -> Option<u32> {
+        let prev_pc: u32 = self.get_current_pc();
+        let (new_pc, idx) = self
+            .waves
+            .pc
+            .try_get_next_val(self.cursor.time_idx)
+            .map(|(sig, _idx)| (u32::try_from_signal(sig), _idx))?;
+        self.cursor.time_idx = idx;
+        if Some(prev_pc) == new_pc {
+            None
+        } else {
+            new_pc
+        }
+    }
+
     /// single-step the interpreter
     pub fn step(&mut self) -> Option<Event> {
-        let maybe_next = self.waves.pc.try_get_next_val(self.cursor.time_idx);
-        if let Some((maybe_pc_sig, _idx)) = maybe_next {
-            let maybe_pc = u32::try_from_signal(maybe_pc_sig);
-            if let Some(pc) = maybe_pc {
-                if self.breakpoints.contains(&pc) {
-                    return Some(Event::Break);
-                }
-                None
-            } else {
-                let sig_str = maybe_pc_sig.to_bit_string().unwrap();
-                eprintln!("PC could not be extracted as a u32 from the PC signal -- extracted value is {sig_str}");
-                Some(Event::Halted)
+        let next_pc = self.next_pc();
+        if let Some(pc) = next_pc {
+            log::info!("pc is {:?}", pc);
+            if self.breakpoints.contains(&pc) {
+                return Some(Event::Break);
             }
+            None
         } else {
+            let current_pc: u32 = self.get_current_pc();
+            log::info!("Could not advance past current pc-- extracted value is {current_pc}");
             Some(Event::Halted)
         }
     }
@@ -77,17 +94,20 @@ impl Waver {
     /// will use the provided callback to poll the connection for incoming data
     /// every 1024 steps.
     pub fn run(&mut self, mut poll_incoming_data: impl FnMut() -> bool) -> RunEvent {
+        
         match self.exec_mode {
             ExecMode::Step => RunEvent::Event(self.step().unwrap_or(Event::DoneStep)),
             ExecMode::Continue => {
                 let mut cycles = 0;
                 loop {
                     if cycles % 1024 == 0 {
+                        log::info!("executed {} cycles", cycles);
                         // poll for incoming data
                         if poll_incoming_data() {
                             break RunEvent::IncomingData;
                         }
                     }
+
                     cycles += 1;
 
                     if let Some(event) = self.step() {

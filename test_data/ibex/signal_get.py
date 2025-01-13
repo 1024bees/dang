@@ -12,6 +12,6 @@ def get_signals(wave: Waveform):
         ).sliced(0, 31)
         for i in range(31)
     }
-    print(gprs)
+
     rv = {"pc": pc, **gprs}
     return rv

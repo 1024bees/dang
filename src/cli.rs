@@ -14,6 +14,7 @@ use gdbstub::stub::GdbStub;
 use gdbstub::stub::SingleThreadStopReason;
 use gdbstub::target::Target;
 use gdbstub::{common::Signal, target::ext::extended_mode::ExtendedMode};
+use std::io::Write;
 use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::net::UnixListener;
@@ -87,28 +88,6 @@ impl run_blocking::BlockingEventLoop for DangGdbEventLoop {
             <Self::Connection as Connection>::Error,
         >,
     > {
-        // The `armv4t` example runs the emulator in the same thread as the GDB state
-        // machine loop. As such, it uses a simple poll-based model to check for
-        // interrupt events, whereby the emulator will check if there is any incoming
-        // data over the connection, and pause execution with a synthetic
-        // `RunEvent::IncomingData` event.
-        //
-        // In more complex integrations, the target will probably be running in a
-        // separate thread, and instead of using a poll-based model to check for
-        // incoming data, you'll want to use some kind of "select" based model to
-        // simultaneously wait for incoming GDB data coming over the connection, along
-        // with any target-reported stop events.
-        //
-        // The specifics of how this "select" mechanism work + how the target reports
-        // stop events will entirely depend on your project's architecture.
-        //
-        // Some ideas on how to implement this `select` mechanism:
-        //
-        // - A mpsc channel
-        // - epoll/kqueue
-        // - Running the target + stopping every so often to peek the connection
-        // - Driving `GdbStub` from various interrupt handlers
-
         let poll_incoming_data = || {
             // gdbstub takes ownership of the underlying connection, so the `borrow_conn`
             // method is used to borrow the underlying connection back from the stub to
@@ -125,8 +104,10 @@ impl run_blocking::BlockingEventLoop for DangGdbEventLoop {
             }
             runtime::RunEvent::Event(event) => {
                 // translate emulator stop reason into GDB stop reason
+
                 let stop_reason = match event {
-                    runtime::Event::DoneStep => SingleThreadStopReason::DoneStep,
+                    runtime::Event::DoneStep => SingleThreadStopReason::Signal(Signal::SIGTRAP),
+
                     runtime::Event::Halted => SingleThreadStopReason::Terminated(Signal::SIGSTOP),
                     runtime::Event::Break => SingleThreadStopReason::SwBreak(()),
                 };
@@ -148,6 +129,9 @@ impl run_blocking::BlockingEventLoop for DangGdbEventLoop {
 }
 
 pub fn start() -> DynResult<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    log::info!("starting logger to stdout");
     let DangArgs {
         wave_path,
         mapping_path,

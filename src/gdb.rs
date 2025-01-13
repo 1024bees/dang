@@ -3,7 +3,9 @@ use std::io::Write;
 use crate::convert::Mappable;
 use crate::runtime::{ExecMode, Waver};
 use crate::waveloader;
+use gdbstub::common::Pid;
 use gdbstub::target::ext::base::singlethread::SingleThreadResume;
+use gdbstub::target::ext::extended_mode::{Args, AttachKind, ShouldTerminate};
 use gdbstub::{
     arch::Arch,
     target::{
@@ -180,7 +182,7 @@ impl Target for Waver {
         //TODO: support this
         //
         //Some(self)
-        None
+        Some(self)
     }
 
     #[inline(always)]
@@ -193,6 +195,36 @@ impl Target for Waver {
         &mut self,
     ) -> Option<target::ext::libraries::LibrariesSvr4Ops<'_, Self>> {
         None
+    }
+}
+
+pub fn copy_range_to_buf(data: &[u8], offset: u64, length: usize, buf: &mut [u8]) -> usize {
+    fn copy_to_buf(data: &[u8], buf: &mut [u8]) -> usize {
+        let len = buf.len().min(data.len());
+        buf[..len].copy_from_slice(&data[..len]);
+        len
+    }
+
+    let offset = offset as usize;
+    if offset > data.len() {
+        return 0;
+    }
+
+    let start = offset;
+    let end = (offset + length).min(data.len());
+    copy_to_buf(&data[start..end], buf)
+}
+
+impl target::ext::exec_file::ExecFile for Waver {
+    fn get_exec_file(
+        &self,
+        _pid: Option<Pid>,
+        offset: u64,
+        length: usize,
+        buf: &mut [u8],
+    ) -> TargetResult<usize, Self> {
+        let filename = b"/dut.elf";
+        Ok(copy_range_to_buf(filename, offset, length, buf))
     }
 }
 
@@ -248,6 +280,7 @@ impl SingleThreadResume for Waver {
         if signal.is_some() {
             return Err("no support for continuing with signal");
         }
+        self.exec_mode = ExecMode::Continue;
 
         Ok(())
     }
@@ -303,7 +336,7 @@ impl target::ext::base::single_register_access::SingleRegisterAccess<()> for Wav
         match reg_id {
             RiscvRegId::Gpr(grp_id) => {
                 let val = self.waves.gprs[grp_id as usize].get_val(idx);
-                println!("width is {:?}", self.waves.gprs[grp_id as usize].width());
+
                 let val = u32::from_signal(val).to_be_bytes();
                 // Use the write method directly on buf
                 match buf.write(&val) {
@@ -352,5 +385,161 @@ impl target::ext::base::singlethread::SingleThreadRangeStepping for Waver {
     fn resume_range_step(&mut self, start: u32, end: u32) -> Result<(), Self::Error> {
         self.exec_mode = ExecMode::RangeStep(start, end);
         Ok(())
+    }
+}
+
+impl target::ext::extended_mode::ExtendedMode for Waver {
+    fn kill(&mut self, pid: Option<Pid>) -> TargetResult<ShouldTerminate, Self> {
+        eprintln!("GDB sent a kill request for pid {:?}", pid);
+        Ok(ShouldTerminate::No)
+    }
+
+    fn restart(&mut self) -> Result<(), Self::Error> {
+        eprintln!("GDB sent a restart request");
+        Ok(())
+    }
+
+    fn attach(&mut self, pid: Pid) -> TargetResult<(), Self> {
+        eprintln!("GDB attached to a process with PID {}", pid);
+        // stub implementation: just report the same code, but running under a
+        // different pid.
+
+        Ok(())
+    }
+
+    fn run(&mut self, filename: Option<&[u8]>, args: Args<'_, '_>) -> TargetResult<Pid, Self> {
+        // simplified example: assume UTF-8 filenames / args
+        //
+        // To be 100% pedantically correct, consider converting to an `OsStr` in the
+        // least lossy way possible (e.g: using the `from_bytes` extension from
+        // `std::os::unix::ffi::OsStrExt`).
+
+        let filename = match filename {
+            None => None,
+            Some(raw) => Some(core::str::from_utf8(raw).map_err(drop)?),
+        };
+        let args = args
+            .map(|raw| core::str::from_utf8(raw).map_err(drop))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        eprintln!(
+            "GDB tried to run a new process with filename {:?}, and args {:?}",
+            filename, args
+        );
+
+        self.reset();
+
+        // when running in single-threaded mode, this PID can be anything
+        Ok(Pid::new(1337).unwrap())
+    }
+
+    fn query_if_attached(&mut self, pid: Pid) -> TargetResult<AttachKind, Self> {
+        eprintln!(
+            "GDB queried if it was attached to a process with PID {}",
+            pid
+        );
+        Ok(AttachKind::Attach)
+    }
+
+    #[inline(always)]
+    fn support_configure_aslr(
+        &mut self,
+    ) -> Option<target::ext::extended_mode::ConfigureAslrOps<'_, Self>> {
+        Some(self)
+    }
+
+    #[inline(always)]
+    fn support_configure_env(
+        &mut self,
+    ) -> Option<target::ext::extended_mode::ConfigureEnvOps<'_, Self>> {
+        Some(self)
+    }
+
+    #[inline(always)]
+    fn support_configure_startup_shell(
+        &mut self,
+    ) -> Option<target::ext::extended_mode::ConfigureStartupShellOps<'_, Self>> {
+        Some(self)
+    }
+
+    #[inline(always)]
+    fn support_configure_working_dir(
+        &mut self,
+    ) -> Option<target::ext::extended_mode::ConfigureWorkingDirOps<'_, Self>> {
+        Some(self)
+    }
+
+    #[inline(always)]
+    fn support_current_active_pid(
+        &mut self,
+    ) -> Option<target::ext::extended_mode::CurrentActivePidOps<'_, Self>> {
+        Some(self)
+    }
+}
+
+impl target::ext::extended_mode::ConfigureAslr for Waver {
+    fn cfg_aslr(&mut self, enabled: bool) -> TargetResult<(), Self> {
+        eprintln!("GDB {} ASLR", if enabled { "enabled" } else { "disabled" });
+        Ok(())
+    }
+}
+
+impl target::ext::extended_mode::ConfigureEnv for Waver {
+    fn set_env(&mut self, key: &[u8], val: Option<&[u8]>) -> TargetResult<(), Self> {
+        // simplified example: assume UTF-8 key/val env vars
+        let key = core::str::from_utf8(key).map_err(drop)?;
+        let val = match val {
+            None => None,
+            Some(raw) => Some(core::str::from_utf8(raw).map_err(drop)?),
+        };
+
+        eprintln!("GDB tried to set a new env var: {:?}={:?}", key, val);
+
+        Ok(())
+    }
+
+    fn remove_env(&mut self, key: &[u8]) -> TargetResult<(), Self> {
+        let key = core::str::from_utf8(key).map_err(drop)?;
+        eprintln!("GDB tried to set remove a env var: {:?}", key);
+
+        Ok(())
+    }
+
+    fn reset_env(&mut self) -> TargetResult<(), Self> {
+        eprintln!("GDB tried to reset env vars");
+
+        Ok(())
+    }
+}
+
+impl target::ext::extended_mode::ConfigureStartupShell for Waver {
+    fn cfg_startup_with_shell(&mut self, enabled: bool) -> TargetResult<(), Self> {
+        eprintln!(
+            "GDB {} startup with shell",
+            if enabled { "enabled" } else { "disabled" }
+        );
+        Ok(())
+    }
+}
+
+impl target::ext::extended_mode::ConfigureWorkingDir for Waver {
+    fn cfg_working_dir(&mut self, dir: Option<&[u8]>) -> TargetResult<(), Self> {
+        let dir = match dir {
+            None => None,
+            Some(raw) => Some(core::str::from_utf8(raw).map_err(drop)?),
+        };
+
+        match dir {
+            None => eprintln!("GDB reset the working directory"),
+            Some(dir) => eprintln!("GDB set the working directory to {:?}", dir),
+        }
+
+        Ok(())
+    }
+}
+
+impl target::ext::extended_mode::CurrentActivePid for Waver {
+    fn current_active_pid(&mut self) -> Result<Pid, Self::Error> {
+        Ok(Pid::new(2).unwrap())
     }
 }

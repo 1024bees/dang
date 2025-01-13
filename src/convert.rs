@@ -36,7 +36,7 @@ macro_rules! impl_mappable_basic {
             fn try_from_signal(signal_value: SignalValue<'_>) -> Option<Self> {
                 match signal_value {
                     SignalValue::Binary(val, bits) => {
-                        if bits <= std::mem::size_of::<Self>() as u32 {
+                        if bits <= std::mem::size_of::<Self>() as u32 * 8 {
                             let val = val.try_into().ok().map(|val| <$t>::from_be_bytes(val));
                             val
                         } else {
