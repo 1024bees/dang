@@ -33,9 +33,9 @@ struct DangArgs {
     /// path to a signal mapping file
     mapping_path: PathBuf,
 
-    #[argh(switch)]
-    /// controls if we use a UDS
-    uds: bool,
+    #[argh(option)]
+    /// path to a signal mapping file
+    elf: PathBuf,
 }
 
 type DynResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -106,8 +106,7 @@ impl run_blocking::BlockingEventLoop for DangGdbEventLoop {
                 // translate emulator stop reason into GDB stop reason
 
                 let stop_reason = match event {
-                    runtime::Event::DoneStep => SingleThreadStopReason::Signal(Signal::SIGTRAP),
-
+                    runtime::Event::DoneStep => SingleThreadStopReason::DoneStep,
                     runtime::Event::Halted => SingleThreadStopReason::Terminated(Signal::SIGSTOP),
                     runtime::Event::Break => SingleThreadStopReason::SwBreak(()),
                 };
@@ -135,25 +134,13 @@ pub fn start() -> DynResult<()> {
     let DangArgs {
         wave_path,
         mapping_path,
-        uds,
+        elf,
     } = argh::from_env();
 
-    let mut emu = Waver::new(wave_path, mapping_path).expect("Could not create wave runtime");
+    let mut emu = Waver::new(wave_path, mapping_path, elf).expect("Could not create wave runtime");
 
-    let connection: Box<dyn ConnectionExt<Error = std::io::Error>> = {
-        if uds {
-            #[cfg(not(unix))]
-            {
-                return Err("Unix Domain Sockets can only be used on Unix".into());
-            }
-            #[cfg(unix)]
-            {
-                Box::new(wait_for_uds("/tmp/dang")?)
-            }
-        } else {
-            Box::new(wait_for_tcp(9001)?)
-        }
-    };
+    let connection: Box<dyn ConnectionExt<Error = std::io::Error>> =
+        { Box::new(wait_for_tcp(9001)?) };
 
     let gdb = GdbStub::new(connection);
 

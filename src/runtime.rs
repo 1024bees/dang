@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::{io::Read, path::PathBuf};
 
 use crate::waveloader::{self, WellenSignalExt};
@@ -31,30 +32,77 @@ pub enum ExecMode {
 pub struct Waver {
     pub waves: RequiredWaves,
     pub cursor: WaveCursor,
-
+    pub mem: DummyMem,
     pub breakpoints: Vec<u32>,
     pub exec_mode: ExecMode,
+}
+
+#[derive(Default)]
+pub struct DummyMem {
+    mem: BTreeMap<u32, u8>,
+}
+
+impl DummyMem {
+    pub fn w8(&mut self, addr: u32, val: u8) {
+        self.mem.insert(addr, val);
+    }
+
+    pub fn r8(&self, addr: u32) -> u8 {
+        self.mem.get(&addr).copied().unwrap_or(0)
+    }
 }
 
 impl Waver {
     pub fn reset(&mut self) {
         self.cursor.time_idx = 0;
-        
     }
 
-    pub fn new(wave_path: PathBuf, py_file_path: PathBuf) -> anyhow::Result<Self> {
+    pub fn new(
+        wave_path: PathBuf,
+        py_file_path: PathBuf,
+        elf_path: PathBuf,
+    ) -> anyhow::Result<Self> {
         let Loaded { cursor, waves } =
             waveloader::Loaded::create_loaded_waves(wave_path, py_file_path)?;
+        // load ELF
+        let program_elf = std::fs::read(elf_path)?;
+        let elf_header = goblin::elf::Elf::parse(&program_elf)?;
+
+        let mut mem = DummyMem::default();
+
+        // copy all in-memory sections from the ELF file into system RAM
+        let sections = elf_header
+            .section_headers
+            .iter()
+            .filter(|h| h.is_alloc() && h.sh_type != goblin::elf::section_header::SHT_NOBITS);
+
+        for h in sections {
+            eprintln!(
+                "loading section {:?} into memory from [{:#010x?}..{:#010x?}]",
+                elf_header.shdr_strtab.get_at(h.sh_name).unwrap(),
+                h.sh_addr,
+                h.sh_addr + h.sh_size,
+            );
+
+            for (i, b) in program_elf[h.file_range().unwrap()].iter().enumerate() {
+                mem.w8(h.sh_addr as u32 + i as u32, *b);
+            }
+        }
+
         Ok(Waver {
             waves,
             cursor,
-
+            mem,
             breakpoints: Vec::new(),
             exec_mode: ExecMode::Step,
         })
     }
     pub fn get_current_pc<T: Mappable>(&self) -> T {
         T::from_signal(self.waves.pc.get_val(self.cursor.time_idx))
+    }
+
+    pub fn get_current_gpr(&self, idx: usize) -> u32 {
+        u32::from_signal(self.waves.gprs[idx].get_val(self.cursor.time_idx))
     }
 
     pub fn next_pc(&mut self) -> Option<u32> {
@@ -94,8 +142,7 @@ impl Waver {
     /// will use the provided callback to poll the connection for incoming data
     /// every 1024 steps.
     pub fn run(&mut self, mut poll_incoming_data: impl FnMut() -> bool) -> RunEvent {
-        
-        match self.exec_mode {
+        let run_event = match self.exec_mode {
             ExecMode::Step => RunEvent::Event(self.step().unwrap_or(Event::DoneStep)),
             ExecMode::Continue => {
                 let mut cycles = 0;
@@ -136,10 +183,13 @@ impl Waver {
                     }
                 }
             }
-        }
+        };
+        log::info!("run_event is {:?}", run_event);
+        run_event
     }
 }
 
+#[derive(Debug)]
 pub enum RunEvent {
     IncomingData,
     Event(Event),

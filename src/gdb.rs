@@ -182,7 +182,7 @@ impl Target for Waver {
         //TODO: support this
         //
         //Some(self)
-        Some(self)
+        None
     }
 
     #[inline(always)]
@@ -198,46 +198,15 @@ impl Target for Waver {
     }
 }
 
-pub fn copy_range_to_buf(data: &[u8], offset: u64, length: usize, buf: &mut [u8]) -> usize {
-    fn copy_to_buf(data: &[u8], buf: &mut [u8]) -> usize {
-        let len = buf.len().min(data.len());
-        buf[..len].copy_from_slice(&data[..len]);
-        len
-    }
-
-    let offset = offset as usize;
-    if offset > data.len() {
-        return 0;
-    }
-
-    let start = offset;
-    let end = (offset + length).min(data.len());
-    copy_to_buf(&data[start..end], buf)
-}
-
-impl target::ext::exec_file::ExecFile for Waver {
-    fn get_exec_file(
-        &self,
-        _pid: Option<Pid>,
-        offset: u64,
-        length: usize,
-        buf: &mut [u8],
-    ) -> TargetResult<usize, Self> {
-        let filename = b"/dut.elf";
-        Ok(copy_range_to_buf(filename, offset, length, buf))
-    }
-}
-
 impl SingleThreadBase for Waver {
     fn read_registers(
         &mut self,
         regs: &mut <Riscv32 as Arch>::Registers,
     ) -> TargetResult<(), Self> {
-        let idx = self.cursor.time_idx;
-        regs.pc = u32::from_signal(self.waves.pc.get_val(idx));
-
+        regs.pc = self.get_current_pc();
+        log::info!("reading pc; pc is {:?}", regs.pc);
         for i in 0..32 {
-            regs.x[i] = u32::from_signal(self.waves.gprs[i].get_val(idx));
+            regs.x[i] = self.get_current_gpr(i);
         }
 
         Ok(())
@@ -257,9 +226,12 @@ impl SingleThreadBase for Waver {
         Some(self)
     }
 
-    fn read_addrs(&mut self, _start_addr: u32, _data: &mut [u8]) -> TargetResult<usize, Self> {
-        //TODO: add support for reading memory eventually, eventually
-        Ok(0)
+    fn read_addrs(&mut self, start_addr: u32, data: &mut [u8]) -> TargetResult<usize, Self> {
+        // this is a simple emulator, with RAM covering the entire 32 bit address space
+        for (addr, val) in (start_addr..).zip(data.iter_mut()) {
+            *val = self.mem.r8(addr)
+        }
+        Ok(data.len())
     }
 
     fn write_addrs(&mut self, _start_addr: u32, _data: &[u8]) -> TargetResult<(), Self> {
@@ -333,7 +305,16 @@ impl target::ext::base::single_register_access::SingleRegisterAccess<()> for Wav
         mut buf: &mut [u8],
     ) -> TargetResult<usize, Self> {
         let idx = self.cursor.time_idx;
+        log::info!("reading reg {:?}", reg_id);
         match reg_id {
+            RiscvRegId::Pc => {
+                let val = self.waves.pc.get_val(idx);
+                let rv = u32::from_signal(val).to_be_bytes();
+                match buf.write(&rv) {
+                    Ok(bytes_written) => Ok(bytes_written), // Return the number of bytes written
+                    Err(_) => Ok(0),
+                }
+            }
             RiscvRegId::Gpr(grp_id) => {
                 let val = self.waves.gprs[grp_id as usize].get_val(idx);
 
@@ -430,7 +411,7 @@ impl target::ext::extended_mode::ExtendedMode for Waver {
         self.reset();
 
         // when running in single-threaded mode, this PID can be anything
-        Ok(Pid::new(1337).unwrap())
+        Ok(Pid::new(1).unwrap())
     }
 
     fn query_if_attached(&mut self, pid: Pid) -> TargetResult<AttachKind, Self> {
@@ -540,6 +521,6 @@ impl target::ext::extended_mode::ConfigureWorkingDir for Waver {
 
 impl target::ext::extended_mode::CurrentActivePid for Waver {
     fn current_active_pid(&mut self) -> Result<Pid, Self::Error> {
-        Ok(Pid::new(2).unwrap())
+        Ok(Pid::new(1).unwrap())
     }
 }
