@@ -12,7 +12,7 @@ impl Mappable for BigUint {
 }
 
 /// Trait to easily convert between existing data types
-pub trait Mappable: Sized {
+pub trait Mappable: Sized + PartialEq {
     fn try_from_signal(signal_value: SignalValue<'_>) -> Option<Self>;
     fn from_signal(signal_value: SignalValue<'_>) -> Self {
         Self::try_from_signal(signal_value)

@@ -227,6 +227,7 @@ impl SingleThreadBase for Waver {
     }
 
     fn read_addrs(&mut self, start_addr: u32, data: &mut [u8]) -> TargetResult<usize, Self> {
+        log::info!("reading memory from {:x} to {:x}", start_addr, start_addr + data.len() as u32);
         // this is a simple emulator, with RAM covering the entire 32 bit address space
         for (addr, val) in (start_addr..).zip(data.iter_mut()) {
             *val = self.mem.r8(addr)

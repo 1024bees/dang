@@ -1,3 +1,4 @@
+use crate::convert::Mappable;
 use crate::runtime::{RequiredWaves, WaveCursor};
 
 use anyhow::{anyhow, Result};
@@ -31,6 +32,8 @@ pub trait WellenSignalExt {
     fn try_get_val(&self, idx: TimeTableIdx) -> Option<SignalValue<'_>>;
     fn try_get_next_val(&self, idx: TimeTableIdx) -> Option<(SignalValue<'_>, TimeTableIdx)>;
 
+    fn find_value<T: Mappable>(&self, value: T) -> Option<TimeTableIdx>;
+
     fn get_val(&self, idx: TimeTableIdx) -> SignalValue<'_> {
         self.try_get_val(idx).unwrap()
     }
@@ -57,6 +60,17 @@ impl WellenSignalExt for Signal {
         } else {
             None
         }
+    }
+
+    fn find_value<T: Mappable>(&self, value: T) -> Option<TimeTableIdx> {
+        self.time_indices()
+            .iter()
+            .position(|idx| {
+                T::try_from_signal(self.get_val(*idx))
+                    .map(|val| val == value)
+                    .unwrap_or(false)
+            })
+            .map(|idx| idx as u32)
     }
 
     fn try_get_val(&self, idx: TimeTableIdx) -> Option<SignalValue<'_>> {
@@ -129,7 +143,11 @@ fn merge_changes(arrays: Vec<&[TimeTableIdx]>) -> Vec<TimeTableIdx> {
 }
 
 impl Loaded {
-    pub fn create_loaded_waves(file_name: PathBuf, signal_py_file: PathBuf) -> Result<Self> {
+    pub fn create_loaded_waves(
+        file_name: PathBuf,
+        signal_py_file: PathBuf,
+        first_pc: u32,
+    ) -> Result<Self> {
         let header = wellen::viewers::read_header(file_name.as_path(), &LOAD_OPTS)?;
         let hierarchy = header.hierarchy;
 
@@ -162,7 +180,6 @@ impl Loaded {
             all_changes,
             all_times: body.time_table,
         };
-        
 
         Ok(Loaded {
             waves: RequiredWaves { pc, gprs },

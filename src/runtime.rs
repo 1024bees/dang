@@ -50,6 +50,15 @@ impl DummyMem {
     pub fn r8(&self, addr: u32) -> u8 {
         self.mem.get(&addr).copied().unwrap_or(0)
     }
+
+    pub fn r32(&self, addr: u32) -> u32 {
+        u32::from_le_bytes([
+            self.r8(addr),
+            self.r8(addr + 1),
+            self.r8(addr + 2),
+            self.r8(addr + 3),
+        ])
+    }
 }
 
 impl Waver {
@@ -62,8 +71,6 @@ impl Waver {
         py_file_path: PathBuf,
         elf_path: PathBuf,
     ) -> anyhow::Result<Self> {
-        let Loaded { cursor, waves } =
-            waveloader::Loaded::create_loaded_waves(wave_path, py_file_path)?;
         // load ELF
         let program_elf = std::fs::read(elf_path)?;
         let elf_header = goblin::elf::Elf::parse(&program_elf)?;
@@ -79,7 +86,10 @@ impl Waver {
         for h in sections {
             eprintln!(
                 "loading section {:?} into memory from [{:#010x?}..{:#010x?}]",
-                elf_header.shdr_strtab.get_at(h.sh_name).unwrap(),
+                elf_header
+                    .shdr_strtab
+                    .get_at(h.sh_name)
+                    .unwrap_or("<no name>"),
                 h.sh_addr,
                 h.sh_addr + h.sh_size,
             );
@@ -88,6 +98,31 @@ impl Waver {
                 mem.w8(h.sh_addr as u32 + i as u32, *b);
             }
         }
+
+        // Try to find a symbol called "_start" or "main" in the ELF symbol table.
+        // If neither are found, fall back to elf_header.entry.
+        let mut first_pc = elf_header.entry;
+        for sym in &elf_header.syms {
+            if let Some(sym_name) = elf_header.strtab.get_at(sym.st_name) {
+                if sym_name == "_start" {
+                    first_pc = sym.st_value;
+                    break; // prefer a real _start symbol
+                } else if sym_name == "main" {
+                    // only use main if we haven't already found _start
+                    first_pc = sym.st_value;
+                    // don't break here in case _start is after main
+                }
+            }
+        }
+
+        log::info!(
+            "The first PC that should be executed is 0x{:08x} (entry = 0x{:08x}).",
+            first_pc,
+            elf_header.entry
+        );
+
+        let Loaded { cursor, waves } =
+            waveloader::Loaded::create_loaded_waves(wave_path, py_file_path, first_pc as u32)?;
 
         Ok(Waver {
             waves,
@@ -125,6 +160,8 @@ impl Waver {
         let next_pc = self.next_pc();
         if let Some(pc) = next_pc {
             log::info!("pc is {:?}", pc);
+            log::info!("mem is {:?}", self.mem.r32(pc));
+
             if self.breakpoints.contains(&pc) {
                 return Some(Event::Break);
             }
