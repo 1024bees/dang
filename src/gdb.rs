@@ -179,10 +179,7 @@ impl Target for Waver {
 
     #[inline(always)]
     fn support_exec_file(&mut self) -> Option<target::ext::exec_file::ExecFileOps<'_, Self>> {
-        //TODO: support this
-        //
-        //Some(self)
-        None
+        Some(self)
     }
 
     #[inline(always)]
@@ -198,6 +195,48 @@ impl Target for Waver {
     }
 }
 
+fn copy_range_to_buf(src: &[u8], offset: u64, length: usize, dest: &mut [u8]) -> Result<usize, ()> {
+    let start = offset as usize;
+    if start >= src.len() {
+        // offset is beyond the end of src, no data copied
+        return Ok(0);
+    }
+
+    // Determine how many bytes we can actually copy
+    let end = (start + length).min(src.len());
+    let copy_len = end - start;
+    let copy_len = copy_len.min(dest.len());
+
+    // Copy the bytes into dest
+    dest[..copy_len].copy_from_slice(&src[start..start + copy_len]);
+
+    // Return how many bytes were actually copied
+    Ok(copy_len)
+}
+
+impl target::ext::exec_file::ExecFile for Waver {
+    fn get_exec_file(
+        &self,
+        pid: Option<Pid>,
+        offset: u64,
+        length: usize,
+        buf: &mut [u8],
+    ) -> TargetResult<usize, Self> {
+        Ok(copy_range_to_buf(
+            self.elf_path
+                .as_path()
+                .as_os_str()
+                .to_str()
+                .unwrap()
+                .as_bytes(),
+            offset,
+            length,
+            buf,
+        )
+        .map_err(|_| TargetError::NonFatal)?)
+    }
+}
+
 impl SingleThreadBase for Waver {
     fn read_registers(
         &mut self,
@@ -208,7 +247,6 @@ impl SingleThreadBase for Waver {
         for i in 0..32 {
             regs.x[i] = self.get_current_gpr(i);
         }
-
         Ok(())
     }
 
@@ -227,7 +265,11 @@ impl SingleThreadBase for Waver {
     }
 
     fn read_addrs(&mut self, start_addr: u32, data: &mut [u8]) -> TargetResult<usize, Self> {
-        log::info!("reading memory from {:x} to {:x}", start_addr, start_addr + data.len() as u32);
+        log::info!(
+            "reading memory from {:x} to {:x}",
+            start_addr,
+            start_addr + data.len() as u32
+        );
         // this is a simple emulator, with RAM covering the entire 32 bit address space
         for (addr, val) in (start_addr..).zip(data.iter_mut()) {
             *val = self.mem.r8(addr)
@@ -306,28 +348,33 @@ impl target::ext::base::single_register_access::SingleRegisterAccess<()> for Wav
         mut buf: &mut [u8],
     ) -> TargetResult<usize, Self> {
         let idx = self.cursor.time_idx;
-        log::info!("reading reg {:?}", reg_id);
-        match reg_id {
+
+        let rv = match reg_id {
             RiscvRegId::Pc => {
                 let val = self.waves.pc.get_val(idx);
                 let rv = u32::from_signal(val).to_be_bytes();
                 match buf.write(&rv) {
                     Ok(bytes_written) => Ok(bytes_written), // Return the number of bytes written
-                    Err(_) => Ok(0),
+                    Err(_) => Err(TargetError::NonFatal),
                 }
             }
             RiscvRegId::Gpr(grp_id) => {
                 let val = self.waves.gprs[grp_id as usize].get_val(idx);
-
                 let val = u32::from_signal(val).to_be_bytes();
                 // Use the write method directly on buf
                 match buf.write(&val) {
                     Ok(bytes_written) => Ok(bytes_written), // Return the number of bytes written
-                    Err(_) => Ok(0),
+                    Err(_) => Err(TargetError::NonFatal),
                 }
             }
-            _ => Ok(0),
+            _ => Err(TargetError::NonFatal),
+        };
+        if let Ok(ref inner) = rv {
+            log::info!("read reg {:?}, {:?} bytes at idx {:?}", reg_id, inner, idx);
+        } else {
+            log::error!("failed to read reg {:?}", reg_id);
         }
+        rv
     }
 
     fn write_register(
@@ -336,7 +383,7 @@ impl target::ext::base::single_register_access::SingleRegisterAccess<()> for Wav
         _reg_id: <Riscv32 as Arch>::RegId,
         _val: &[u8],
     ) -> TargetResult<(), Self> {
-        Err(().into())
+        Err(TargetError::NonFatal)
     }
 }
 

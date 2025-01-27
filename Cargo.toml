@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.86"
-gdbstub = "0.7.1"
+gdbstub = "0.7.3"
 gdbstub_arch = "0.3.0"
 wellen = { path = "wellen/wellen" }
 pywellen = { path = "wellen/pywellen" }

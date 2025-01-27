@@ -32,7 +32,7 @@ pub trait WellenSignalExt {
     fn try_get_val(&self, idx: TimeTableIdx) -> Option<SignalValue<'_>>;
     fn try_get_next_val(&self, idx: TimeTableIdx) -> Option<(SignalValue<'_>, TimeTableIdx)>;
 
-    fn find_value<T: Mappable>(&self, value: T) -> Option<TimeTableIdx>;
+    fn find_idx<T: Mappable>(&self, value: T) -> Option<TimeTableIdx>;
 
     fn get_val(&self, idx: TimeTableIdx) -> SignalValue<'_> {
         self.try_get_val(idx).unwrap()
@@ -62,7 +62,10 @@ impl WellenSignalExt for Signal {
         }
     }
 
-    fn find_value<T: Mappable>(&self, value: T) -> Option<TimeTableIdx> {
+    /// Finds the index of the first value in the signal that matches the given value
+    ///
+    /// This is a linear search, so it is not efficient for large signals.
+    fn find_idx<T: Mappable>(&self, value: T) -> Option<TimeTableIdx> {
         self.time_indices()
             .iter()
             .position(|idx| {
@@ -175,8 +178,10 @@ impl Loaded {
             all_changes_together.push(gpr.time_indices());
         }
         let all_changes = merge_changes(all_changes_together);
+        let first_pc_idx = pc.find_idx(first_pc).unwrap();
+        log::info!("found first PC index: {}", first_pc_idx);
         let cursor = WaveCursor {
-            time_idx: 0,
+            time_idx: first_pc_idx,
             all_changes,
             all_times: body.time_table,
         };

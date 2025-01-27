@@ -35,6 +35,7 @@ pub struct Waver {
     pub mem: DummyMem,
     pub breakpoints: Vec<u32>,
     pub exec_mode: ExecMode,
+    pub elf_path: PathBuf,
 }
 
 #[derive(Default)]
@@ -63,7 +64,7 @@ impl DummyMem {
 
 impl Waver {
     pub fn reset(&mut self) {
-        self.cursor.time_idx = 0;
+        log::info!("resetting cursor! actually doing nothing");
     }
 
     pub fn new(
@@ -72,7 +73,7 @@ impl Waver {
         elf_path: PathBuf,
     ) -> anyhow::Result<Self> {
         // load ELF
-        let program_elf = std::fs::read(elf_path)?;
+        let program_elf = std::fs::read(&elf_path)?;
         let elf_header = goblin::elf::Elf::parse(&program_elf)?;
 
         let mut mem = DummyMem::default();
@@ -130,6 +131,7 @@ impl Waver {
             mem,
             breakpoints: Vec::new(),
             exec_mode: ExecMode::Step,
+            elf_path: elf_path.clone(),
         })
     }
     pub fn get_current_pc<T: Mappable>(&self) -> T {
