@@ -21,7 +21,6 @@ const LOAD_OPTS: LoadOptions = LoadOptions {
     remove_scopes_with_empty_name: false,
 };
 
-use serde::Deserialize;
 
 pub trait WellenExt {
     fn get_var<S: AsRef<str>>(&self, varname: S) -> Option<VarRef>;
@@ -96,19 +95,19 @@ struct Item<'a> {
     idx: usize,
 }
 
-impl<'a> PartialEq for Item<'a> {
+impl PartialEq for Item<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.get_item() == other.get_item()
     }
 }
 
-impl<'a> PartialOrd for Item<'a> {
+impl PartialOrd for Item<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.get_item().partial_cmp(&other.get_item())
     }
 }
 
-impl<'a> Ord for Item<'a> {
+impl Ord for Item<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.get_item().cmp(&other.get_item())
     }
@@ -154,7 +153,7 @@ impl Loaded {
         let header = wellen::viewers::read_header(file_name.as_path(), &LOAD_OPTS)?;
         let hierarchy = header.hierarchy;
 
-        let mut body = wellen::viewers::read_body(header.body, &hierarchy, None)?;
+        let body = wellen::viewers::read_body(header.body, &hierarchy, None)?;
 
         let script_name = "get_signals";
         let mut py_signals =

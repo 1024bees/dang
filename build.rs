@@ -1,8 +1,7 @@
 // build.rs
 use std::{
     env,
-    path::{Path, PathBuf},
-    process::Command,
+    path::PathBuf,
 };
 
 fn static_link_python() {

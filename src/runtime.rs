@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::{io::Read, path::PathBuf};
+use std::path::PathBuf;
 
 use crate::waveloader::{self, WellenSignalExt};
 use crate::{convert::Mappable, waveloader::Loaded};

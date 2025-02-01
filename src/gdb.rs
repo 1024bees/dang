@@ -222,7 +222,7 @@ impl target::ext::exec_file::ExecFile for Waver {
         length: usize,
         buf: &mut [u8],
     ) -> TargetResult<usize, Self> {
-        Ok(copy_range_to_buf(
+        copy_range_to_buf(
             self.elf_path
                 .as_path()
                 .as_os_str()
@@ -233,7 +233,7 @@ impl target::ext::exec_file::ExecFile for Waver {
             length,
             buf,
         )
-        .map_err(|_| TargetError::NonFatal)?)
+        .map_err(|_| TargetError::NonFatal)
     }
 }
 

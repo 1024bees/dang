@@ -14,7 +14,6 @@ use gdbstub::stub::GdbStub;
 use gdbstub::stub::SingleThreadStopReason;
 use gdbstub::target::Target;
 use gdbstub::{common::Signal, target::ext::extended_mode::ExtendedMode};
-use std::io::Write;
 use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::net::UnixListener;
