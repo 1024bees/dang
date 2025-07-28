@@ -1,0 +1,15 @@
+[package]
+name = "shucks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description.workspace = true
+repository.workspace = true
+keywords.workspace = true
+license.workspace = true
+
+[dependencies]
+gdbstub = { workspace=true}
+gdbstub_arch = { workspace = true}
+

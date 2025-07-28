@@ -1,29 +1,27 @@
-[package]
-name = "dang"
+# Copyright 2023-2024 The Regents of the University of California
+# released under BSD 3-Clause License
+# author: Kevin Laeufer <laeufer@berkeley.edu>
+
+
+[workspace]
+resolver = "2"
+members = ["dang", "shucks"]
+default-members = ["dang"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.73.0"
+authors = ["James Connolly <jimmy@1024bees.com>"]
+description = "GDB for pre-silicon "
+repository = "https://github.com/1024bees/dang"
+keywords = ["vcd", "fst", "waveform", "wavedump"]
+license = "MIT"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-anyhow = "1.0.86"
-gdbstub = "0.7.3"
+[workspace.dependencies]
+gdbstub = "0.7.6"
 gdbstub_arch = "0.3.0"
-wellen = { path = "wellen/wellen" }
-pywellen = { path = "wellen/pywellen" }
-
-num-bigint = "0.4.6"
-serde = { version = "1.0.210", features = ["derive"] }
-serde_yaml = "0.9.34"
-argh = "0.1.12"
-
-pyo3 = { version = "0.21.1", features = ["num-bigint", "abi3-py310"] }
-log = "0.4.22"
-env_logger = "0.11.6"
-goblin = "0.9.3"
 
 
-[build-dependencies]
-cc = "1.0"
-num_cpus = "1.15"
-glob = "0.3"
+[profile.release]
+debug = true
