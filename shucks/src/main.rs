@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Cursor, Write},
+    io::{self, Cursor, Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
     ops::Add,
 };
@@ -9,10 +9,10 @@ pub enum Packet {
     Ack,
     //Nack,
     //Interrupt,
-    Command(Command),
+    Command(GdbCommand),
 }
 
-enum Command {
+enum GdbCommand {
     Base(Base),
     Resume(Resume),
 }
@@ -85,7 +85,7 @@ impl Packet {
     }
 }
 
-impl Command {
+impl GdbCommand {
     fn to_command<'a>(&self, slice: &'a mut [u8]) -> Result<FinishedPacket<'a>, io::Error> {
         match self {
             Self::Base(base) => base.to_cmd(slice),
@@ -154,13 +154,29 @@ impl Base {
 
 pub struct Client {
     strm: TcpStream,
+    packet_scratch: [u8; 200],
 }
 
 impl Client {
     pub fn new() -> Self {
         let addr = "127.0.0.1:9001";
         let strm = TcpStream::connect(addr).unwrap();
-        Self { strm }
+        strm.set_nodelay(true).unwrap();
+        Self {
+            strm,
+            packet_scratch: [0; 200],
+        }
+    }
+
+    pub fn send_command(&mut self, packet: Packet) -> Result<Vec<u8>, std::io::Error> {
+        let pkt = packet.to_finished_packet(self.packet_scratch.as_mut_slice())?;
+        let res = self.strm.write_all(pkt.0)?;
+        let mut rv = Vec::with_capacity(1024);
+        let read = self.strm.read(rv.as_mut_slice())?;
+
+        dbg!("read {} bytes", read);
+
+        Ok(rv)
     }
 }
 
