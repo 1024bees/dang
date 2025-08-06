@@ -127,14 +127,19 @@ impl run_blocking::BlockingEventLoop for DangGdbEventLoop {
 }
 
 pub fn start() -> DynResult<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-
-    log::info!("starting logger to stdout");
     let DangArgs {
         wave_path,
         mapping_path,
         elf,
     } = argh::from_env();
+
+    start_with_args(wave_path, mapping_path, elf)
+}
+
+pub fn start_with_args(wave_path: PathBuf, mapping_path: PathBuf, elf: PathBuf) -> DynResult<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    log::info!("starting logger to stdout");
 
     let mut emu = Waver::new(wave_path, mapping_path, elf).expect("Could not create wave runtime");
 
