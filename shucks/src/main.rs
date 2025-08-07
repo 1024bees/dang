@@ -218,12 +218,12 @@ mod tests {
         let response = cl
             .send_command_parsed(Packet::Command(GdbCommand::Base(Base::QuestionMark)))
             .expect("Failed to send and parse question mark command");
-        println!("Parsed ? response: {}", response);
+        println!("Parsed ? response: {response}");
 
         let response = cl
             .send_command_parsed(Packet::Command(GdbCommand::Base(Base::QSupported)))
             .expect("Failed to send and parse qSupported command");
-        println!("Parsed qSupported response: {}", response);
+        println!("Parsed qSupported response: {response}");
 
         sleep(Duration::from_millis(100));
 

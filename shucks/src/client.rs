@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    response::{GdbResponse, ParseError},
+    response::GdbResponse,
     Packet,
 };
 
@@ -25,7 +25,7 @@ impl Client {
     }
 
     pub fn new_with_port(port: u16) -> Self {
-        let addr = format!("127.0.0.1:{}", port);
+        let addr = format!("127.0.0.1:{port}");
         let strm = TcpStream::connect(addr).unwrap();
         strm.set_nodelay(true).unwrap();
         Self {
@@ -42,7 +42,7 @@ impl Client {
         let mut buffer = [0u8; 4096];
         let bytes_read = self.strm.read(&mut buffer)?;
 
-        println!("Read {} bytes", bytes_read);
+        println!("Read {bytes_read} bytes");
 
         let rv = buffer[..bytes_read].to_vec();
 
@@ -57,7 +57,7 @@ impl Client {
     ) -> Result<GdbResponse, Box<dyn std::error::Error>> {
         let raw_response = self.send_command(packet)?;
         let parsed_response = GdbResponse::parse(&raw_response)?;
-        println!("Parsed response: {}", parsed_response);
+        println!("Parsed response: {parsed_response}");
         Ok(parsed_response)
     }
 
