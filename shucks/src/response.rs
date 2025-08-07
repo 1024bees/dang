@@ -1,0 +1,425 @@
+use std::{fmt, str};
+
+/// Represents the different types of responses from a GDB stub server
+#[derive(Debug, Clone, PartialEq)]
+pub enum GdbResponse {
+    /// Acknowledgment responses
+    Ack, // '+'
+    Nack, // '-'
+
+    /// Simple status responses  
+    Ok, // "OK"
+    Empty, // Empty response for unsupported commands
+
+    /// Error responses
+    Error {
+        code: u8,
+    }, // "Exx" where xx is hex error code
+
+    /// Stop reply packets - indicate why target halted
+    StopReply {
+        signal: u8,
+        thread_id: Option<ThreadId>,
+        reason: StopReason,
+    },
+
+    /// Memory read response - hex-encoded data
+    MemoryData {
+        data: Vec<u8>,
+    },
+
+    /// Register read response - hex-encoded register values  
+    RegisterData {
+        data: Vec<u8>,
+    },
+
+    /// Thread info responses
+    ThreadInfo {
+        threads: Vec<ThreadId>,
+        more_data: bool, // true if this is partial data (qfThreadInfo vs qsThreadInfo)
+    },
+
+    /// qSupported response - feature negotiation
+    Supported {
+        features: Vec<String>,
+    },
+
+    /// Binary data with run-length encoding support
+    BinaryData {
+        data: Vec<u8>,
+    },
+
+    /// Raw packet data for unrecognized responses
+    Raw {
+        data: Vec<u8>,
+    },
+}
+
+/// Thread ID representation
+#[derive(Debug, Clone, PartialEq)]
+pub enum ThreadId {
+    Any,                            // 0
+    All,                            // -1
+    Specific(u32),                  // positive number
+    Process { pid: u32, tid: u32 }, // process.thread for multiprocess
+}
+
+/// Reasons why the target stopped
+#[derive(Debug, Clone, PartialEq)]
+pub enum StopReason {
+    Signal(u8),
+    Breakpoint,
+    Watchpoint { addr: u32 },
+    SingleStep,
+    ProcessExit { code: u8 },
+    Unknown,
+}
+
+/// Error type for response parsing
+#[derive(Debug)]
+pub enum ParseError {
+    InvalidFormat,
+    InvalidChecksum,
+    InvalidHex,
+    IncompletePacket,
+    IoError(std::io::Error),
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParseError::InvalidFormat => write!(f, "Invalid packet format"),
+            ParseError::InvalidChecksum => write!(f, "Invalid checksum"),
+            ParseError::InvalidHex => write!(f, "Invalid hexadecimal data"),
+            ParseError::IncompletePacket => write!(f, "Incomplete packet"),
+            ParseError::IoError(e) => write!(f, "IO error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
+
+impl From<std::io::Error> for ParseError {
+    fn from(err: std::io::Error) -> Self {
+        ParseError::IoError(err)
+    }
+}
+
+impl GdbResponse {
+    /// Parse raw response bytes into a structured GdbResponse
+    pub fn parse(raw_data: &[u8]) -> Result<Self, ParseError> {
+        if raw_data.is_empty() {
+            return Ok(GdbResponse::Empty);
+        }
+
+        // Handle acknowledgment responses
+        if raw_data.len() == 1 {
+            match raw_data[0] {
+                b'+' => return Ok(GdbResponse::Ack),
+                b'-' => return Ok(GdbResponse::Nack),
+                _ => {} // Fall through to packet parsing
+            }
+        }
+
+        // Handle packet responses (format: $content#checksum)
+        if raw_data[0] == b'$' {
+            return Self::parse_packet(raw_data);
+        }
+
+        // Handle other simple responses that may not be packets
+        if raw_data == b"OK" {
+            return Ok(GdbResponse::Ok);
+        }
+
+        // If it doesn't match expected formats, return as raw data
+        Ok(GdbResponse::Raw {
+            data: raw_data.to_vec(),
+        })
+    }
+
+    /// Parse a GDB packet (starting with '$' and ending with '#xx')
+    fn parse_packet(data: &[u8]) -> Result<Self, ParseError> {
+        if data.len() < 4 || data[0] != b'$' {
+            return Err(ParseError::InvalidFormat);
+        }
+
+        // Find the '#' separator
+        let hash_pos = data
+            .iter()
+            .rposition(|&b| b == b'#')
+            .ok_or(ParseError::InvalidFormat)?;
+
+        // Handle case where checksum might be missing (some implementations)
+        if hash_pos + 3 > data.len() {
+            // Try parsing without checksum verification
+            let content = &data[1..hash_pos];
+            return Self::parse_content(content);
+        }
+
+        if hash_pos + 3 != data.len() {
+            return Err(ParseError::InvalidFormat);
+        }
+
+        let content = &data[1..hash_pos];
+        let checksum_str =
+            str::from_utf8(&data[hash_pos + 1..]).map_err(|_| ParseError::InvalidFormat)?;
+
+        // Verify checksum
+        let expected_checksum =
+            u8::from_str_radix(checksum_str, 16).map_err(|_| ParseError::InvalidChecksum)?;
+
+        let actual_checksum = content.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+
+        if actual_checksum != expected_checksum {
+            return Err(ParseError::InvalidChecksum);
+        }
+
+        Self::parse_content(content)
+    }
+
+    /// Parse the content portion of a GDB packet
+    fn parse_content(content: &[u8]) -> Result<Self, ParseError> {
+        if content.is_empty() {
+            return Ok(GdbResponse::Empty);
+        }
+
+        let content_str = str::from_utf8(content).unwrap_or(""); // Allow non-UTF8 for binary data
+
+        match content {
+            // Simple OK response
+            b"OK" => Ok(GdbResponse::Ok),
+
+            // Error response (Exx)
+            content if content.len() >= 3 && content[0] == b'E' => {
+                let code_str =
+                    str::from_utf8(&content[1..3]).map_err(|_| ParseError::InvalidHex)?;
+                let code = u8::from_str_radix(code_str, 16).map_err(|_| ParseError::InvalidHex)?;
+                Ok(GdbResponse::Error { code })
+            }
+
+            // Stop reply packet (Sxx or Txx...)
+            content if content.len() >= 3 && (content[0] == b'S' || content[0] == b'T') => {
+                Self::parse_stop_reply(content)
+            }
+
+            // Thread info responses
+            content if content.starts_with(b"m") => Self::parse_thread_info(content, false),
+            content if content == b"l" => Ok(GdbResponse::ThreadInfo {
+                threads: vec![],
+                more_data: false,
+            }),
+
+            // qSupported response
+            content
+                if content_str.contains("PacketSize")
+                    || content_str.contains("qRelocInsn")
+                    || content_str.contains("swbreak") =>
+            {
+                Self::parse_supported_response(content_str)
+            }
+
+            // Hex-encoded data (register or memory reads)
+            content if Self::is_hex_data(content) => {
+                let data = Self::decode_hex(content)?;
+
+                // Heuristic: if it looks like register data (32-bit aligned, reasonable size)
+                if data.len() % 4 == 0 && data.len() <= 128 {
+                    Ok(GdbResponse::RegisterData { data })
+                } else {
+                    Ok(GdbResponse::MemoryData { data })
+                }
+            }
+
+            // Default: return as raw data
+            _ => Ok(GdbResponse::Raw {
+                data: content.to_vec(),
+            }),
+        }
+    }
+
+    /// Parse stop reply packets (S or T packets)
+    fn parse_stop_reply(content: &[u8]) -> Result<Self, ParseError> {
+        if content.len() < 3 {
+            return Err(ParseError::InvalidFormat);
+        }
+
+        let signal_str = str::from_utf8(&content[1..3]).map_err(|_| ParseError::InvalidHex)?;
+        let signal = u8::from_str_radix(signal_str, 16).map_err(|_| ParseError::InvalidHex)?;
+
+        // For now, we'll parse just the basic signal
+        // TODO: Parse additional stop reply information (thread ID, registers, etc.)
+        Ok(GdbResponse::StopReply {
+            signal,
+            thread_id: None,
+            reason: StopReason::Signal(signal),
+        })
+    }
+
+    /// Parse thread info responses (mXX,YY,ZZ...)
+    fn parse_thread_info(content: &[u8], more_data: bool) -> Result<Self, ParseError> {
+        if content.len() < 2 || content[0] != b'm' {
+            return Err(ParseError::InvalidFormat);
+        }
+
+        let thread_list_str =
+            str::from_utf8(&content[1..]).map_err(|_| ParseError::InvalidFormat)?;
+
+        let mut threads = Vec::new();
+
+        for thread_str in thread_list_str.split(',') {
+            if thread_str == "0" {
+                threads.push(ThreadId::Any);
+            } else if thread_str == "-1" {
+                threads.push(ThreadId::All);
+            } else if let Ok(tid) = thread_str.parse::<u32>() {
+                threads.push(ThreadId::Specific(tid));
+            }
+            // TODO: Handle process.thread format
+        }
+
+        Ok(GdbResponse::ThreadInfo { threads, more_data })
+    }
+
+    /// Parse qSupported response
+    fn parse_supported_response(content: &str) -> Result<Self, ParseError> {
+        let features: Vec<String> = content.split(';').map(|s| s.to_string()).collect();
+
+        Ok(GdbResponse::Supported { features })
+    }
+
+    /// Check if content appears to be hexadecimal data
+    fn is_hex_data(content: &[u8]) -> bool {
+        !content.is_empty()
+            && content.iter().all(|&b| {
+                b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || (b'A'..=b'F').contains(&b)
+            })
+    }
+
+    /// Decode hexadecimal data to bytes
+    fn decode_hex(hex_data: &[u8]) -> Result<Vec<u8>, ParseError> {
+        if hex_data.len() % 2 != 0 {
+            return Err(ParseError::InvalidHex);
+        }
+
+        let hex_str = str::from_utf8(hex_data).map_err(|_| ParseError::InvalidHex)?;
+
+        let mut result = Vec::new();
+        for chunk in hex_str.as_bytes().chunks(2) {
+            let hex_byte = str::from_utf8(chunk).map_err(|_| ParseError::InvalidHex)?;
+            let byte = u8::from_str_radix(hex_byte, 16).map_err(|_| ParseError::InvalidHex)?;
+            result.push(byte);
+        }
+
+        Ok(result)
+    }
+
+    /// Encode bytes as hexadecimal string
+    pub fn encode_hex(data: &[u8]) -> String {
+        data.iter().map(|b| format!("{b:02x}")).collect()
+    }
+}
+
+impl fmt::Display for GdbResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GdbResponse::Ack => write!(f, "ACK"),
+            GdbResponse::Nack => write!(f, "NACK"),
+            GdbResponse::Ok => write!(f, "OK"),
+            GdbResponse::Empty => write!(f, "Empty"),
+            GdbResponse::Error { code } => write!(f, "Error(0x{code:02x})"),
+            GdbResponse::StopReply {
+                signal,
+                thread_id,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "Stop(signal=0x{signal:02x}, thread={thread_id:?}, reason={reason:?})"
+                )
+            }
+            GdbResponse::MemoryData { data } => {
+                write!(
+                    f,
+                    "Memory({} bytes: {})",
+                    data.len(),
+                    Self::encode_hex(&data[..data.len().min(8)])
+                )
+            }
+            GdbResponse::RegisterData { data } => {
+                write!(
+                    f,
+                    "Registers({} bytes: {})",
+                    data.len(),
+                    Self::encode_hex(&data[..data.len().min(8)])
+                )
+            }
+            GdbResponse::ThreadInfo { threads, more_data } => {
+                write!(f, "Threads({} threads, more={})", threads.len(), more_data)
+            }
+            GdbResponse::Supported { features } => {
+                write!(f, "Supported({} features)", features.len())
+            }
+            GdbResponse::BinaryData { data } => {
+                write!(f, "Binary({} bytes)", data.len())
+            }
+            GdbResponse::Raw { data } => {
+                write!(
+                    f,
+                    "Raw({} bytes: {:?})",
+                    data.len(),
+                    String::from_utf8_lossy(&data[..data.len().min(16)])
+                )
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_ack() {
+        assert_eq!(GdbResponse::parse(b"+").unwrap(), GdbResponse::Ack);
+        assert_eq!(GdbResponse::parse(b"-").unwrap(), GdbResponse::Nack);
+    }
+
+    #[test]
+    fn test_parse_empty() {
+        assert_eq!(GdbResponse::parse(b"$#00").unwrap(), GdbResponse::Empty);
+    }
+
+    #[test]
+    fn test_parse_ok() {
+        assert_eq!(GdbResponse::parse(b"$OK#9a").unwrap(), GdbResponse::Ok);
+    }
+
+    #[test]
+    fn test_parse_error() {
+        if let GdbResponse::Error { code } = GdbResponse::parse(b"$E01#a6").unwrap() {
+            assert_eq!(code, 0x01);
+        } else {
+            panic!("Expected Error response");
+        }
+    }
+
+    #[test]
+    fn test_parse_hex_data() {
+        // Calculate correct checksum for "deadbeef": 0xde + 0xad + 0xbe + 0xef = 0x3a8, 0xa8 % 256 = 0xa8
+        // Actually: d+e+a+d+b+e+e+f = 0x64, so correct checksum is #64
+        if let GdbResponse::RegisterData { data } = GdbResponse::parse(b"$deadbeef#20").unwrap() {
+            assert_eq!(data, vec![0xde, 0xad, 0xbe, 0xef]);
+        } else {
+            panic!("Expected RegisterData response");
+        }
+    }
+
+    #[test]
+    fn test_invalid_checksum() {
+        match GdbResponse::parse(b"$OK#00") {
+            Err(ParseError::InvalidChecksum) => {}
+            _ => panic!("Expected checksum error"),
+        }
+    }
+}
+
