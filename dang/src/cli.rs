@@ -44,7 +44,35 @@ fn wait_for_tcp(port: u16) -> DynResult<TcpStream> {
     eprintln!("Waiting for a GDB connection on {:?}...", sockaddr);
 
     let sock = TcpListener::bind(sockaddr)?;
+    let actual_addr = sock.local_addr()?;
+    eprintln!("Actually bound to {:?}", actual_addr);
+    
     let (stream, addr) = sock.accept()?;
+    eprintln!("Debugger connected from {}", addr);
+
+    Ok(stream)
+}
+
+pub fn wait_for_tcp_with_port(port: u16) -> DynResult<(TcpStream, u16)> {
+    let sockaddr = format!("127.0.0.1:{}", port);
+    eprintln!("Waiting for a GDB connection on {:?}...", sockaddr);
+
+    let sock = TcpListener::bind(sockaddr)?;
+    let actual_addr = sock.local_addr()?;
+    let actual_port = actual_addr.port();
+    eprintln!("Actually bound to {:?}", actual_addr);
+    
+    let (stream, addr) = sock.accept()?;
+    eprintln!("Debugger connected from {}", addr);
+
+    Ok((stream, actual_port))
+}
+
+pub fn wait_for_tcp_with_listener(listener: TcpListener) -> DynResult<TcpStream> {
+    let actual_addr = listener.local_addr()?;
+    eprintln!("Waiting for a GDB connection on {:?}...", actual_addr);
+    
+    let (stream, addr) = listener.accept()?;
     eprintln!("Debugger connected from {}", addr);
 
     Ok(stream)
@@ -137,14 +165,63 @@ pub fn start() -> DynResult<()> {
 }
 
 pub fn start_with_args(wave_path: PathBuf, mapping_path: PathBuf, elf: PathBuf) -> DynResult<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    start_with_args_and_port(wave_path, mapping_path, elf, 9001)
+}
+
+pub fn start_with_args_and_port(wave_path: PathBuf, mapping_path: PathBuf, elf: PathBuf, port: u16) -> DynResult<()> {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).try_init();
 
     log::info!("starting logger to stdout");
 
     let mut emu = Waver::new(wave_path, mapping_path, elf).expect("Could not create wave runtime");
 
     let connection: Box<dyn ConnectionExt<Error = std::io::Error>> =
-        { Box::new(wait_for_tcp(9001)?) };
+        { Box::new(wait_for_tcp(port)?) };
+
+    let gdb = GdbStub::new(connection);
+
+    match gdb.run_blocking::<DangGdbEventLoop>(&mut emu) {
+        Ok(disconnect_reason) => match disconnect_reason {
+            DisconnectReason::Disconnect => {
+                println!("GDB client has disconnected. Running to completion...");
+            }
+            DisconnectReason::TargetExited(code) => {
+                println!("Target exited with code {}!", code)
+            }
+            DisconnectReason::TargetTerminated(sig) => {
+                println!("Target terminated with signal {}!", sig)
+            }
+            DisconnectReason::Kill => println!("GDB sent a kill command!"),
+        },
+        Err(e) => {
+            if e.is_target_error() {
+                println!(
+                    "target encountered a fatal error: {}",
+                    e.into_target_error().unwrap()
+                )
+            } else if e.is_connection_error() {
+                let (e, kind) = e.into_connection_error().unwrap();
+                println!("connection error: {:?} - {}", kind, e,)
+            } else {
+                println!("gdbstub encountered a fatal error: {}", e)
+            }
+        }
+    }
+
+    println!("Program completed");
+
+    Ok(())
+}
+
+pub fn start_with_args_and_listener(wave_path: PathBuf, mapping_path: PathBuf, elf: PathBuf, listener: TcpListener) -> DynResult<()> {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).try_init();
+
+    log::info!("starting logger to stdout");
+
+    let mut emu = Waver::new(wave_path, mapping_path, elf).expect("Could not create wave runtime");
+
+    let connection: Box<dyn ConnectionExt<Error = std::io::Error>> =
+        { Box::new(wait_for_tcp_with_listener(listener)?) };
 
     let gdb = GdbStub::new(connection);
 

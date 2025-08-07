@@ -52,7 +52,7 @@ impl Resume {
     pub fn to_cmd<'a>(&self, slice: &'a mut [u8]) -> Result<FinishedPacket<'a>, io::Error> {
         let mut cursor = PacketCursor::new(slice);
         cursor.write(b"$")?;
-        cursor.write(self.base_str().as_bytes())?;
+        cursor.write_content(self.base_str().as_bytes())?;
 
         {
             //pass
@@ -85,10 +85,15 @@ impl Base {
     pub fn to_cmd<'a>(&self, slice: &'a mut [u8]) -> Result<FinishedPacket<'a>, io::Error> {
         let mut cursor = PacketCursor::new(slice);
         cursor.write(b"$")?;
-        cursor.write(self.base_str().as_bytes())?;
+        cursor.write_content(self.base_str().as_bytes())?;
 
-        {
-            //pass
+        match self {
+            Self::QSupported => {
+                cursor.write_content(b":xmlRegisters=riscv")?;
+            }
+            _ => {
+                // pass
+            }
         };
         cursor.finish()
     }

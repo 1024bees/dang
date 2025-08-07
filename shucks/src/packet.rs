@@ -19,6 +19,10 @@ impl<'a> PacketCursor<'a> {
     }
 
     pub fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
+        self.cursor.write(buf)
+    }
+
+    pub fn write_content(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
         let sum = buf.iter().fold(0u64, |a, b| a.add(*b as u64));
         self.sum += sum;
         self.cursor.write(buf)
@@ -26,7 +30,7 @@ impl<'a> PacketCursor<'a> {
     
     pub fn finish(mut self) -> Result<FinishedPacket<'a>, std::io::Error> {
         let modsum = self.sum % 256;
-        let str = format!("#{modsum:x}");
+        let str = format!("#{modsum:02x}");
         self.cursor.write(str.as_bytes())?;
         let slice_end = self.cursor.position() as usize;
         let slice = &self.cursor.into_inner()[0..slice_end];
