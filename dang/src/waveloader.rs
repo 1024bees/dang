@@ -163,7 +163,7 @@ impl Loaded {
             .remove("pc")
             .expect("No signal provided named pc!");
 
-        let gprs: Vec<Signal> = (0..31)
+        let gprs: Vec<Signal> = (0..32)
             .map(|val| {
                 py_signals
                     .remove(format!("x{val}").as_str())

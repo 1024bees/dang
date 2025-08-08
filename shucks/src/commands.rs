@@ -14,7 +14,7 @@ pub enum Base {
     UpperG,
     H,
     K,
-    LowerM,
+    LowerM { addr: u32, length: u32 },
     UpperM,
     QAttached,
     QfThreadInfo,
@@ -70,7 +70,7 @@ impl Base {
             Self::UpperG => "G",
             Self::H => "H",
             Self::K => "k",
-            Self::LowerM => "m",
+            Self::LowerM { .. } => "m",
             Self::UpperM => "M",
             Self::QsThreadInfo => "qsThreadInfo",
             Self::QfThreadInfo => "qfThreadInfo",
@@ -90,6 +90,9 @@ impl Base {
         match self {
             Self::QSupported => {
                 cursor.write_content(b":xmlRegisters=riscv")?;
+            }
+            Self::LowerM { addr, length } => {
+                cursor.write_content(format!("{:x},{:x}", addr, length).as_bytes())?;
             }
             _ => {
                 // pass

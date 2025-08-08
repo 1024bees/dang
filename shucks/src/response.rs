@@ -121,14 +121,42 @@ impl GdbResponse {
             }
         }
 
+        // Handle mixed ACK + packet response (e.g., "+$OK#9a")
+        if raw_data.len() > 1 && raw_data[0] == b'+' && raw_data[1] == b'$' {
+            // Skip the ACK and parse the packet part
+            return Self::parse_packet(&raw_data[1..]);
+        }
+
         // Handle packet responses (format: $content#checksum)
         if raw_data[0] == b'$' {
             return Self::parse_packet(raw_data);
         }
 
+        // Handle malformed packets that are missing the '$' prefix (e.g., "OK#9a")
+        if raw_data.len() >= 4 {
+            if let Some(hash_pos) = raw_data.iter().rposition(|&b| b == b'#') {
+                if hash_pos + 3 == raw_data.len() {
+                    // This looks like a packet without the '$' prefix, add it and parse
+                    let mut fixed_packet = vec![b'$'];
+                    fixed_packet.extend_from_slice(raw_data);
+                    return Self::parse_packet(&fixed_packet);
+                }
+            }
+        }
+
         // Handle other simple responses that may not be packets
         if raw_data == b"OK" {
             return Ok(GdbResponse::Ok);
+        }
+
+        // Handle special cases for thread info responses
+        // "9a" might be a checksum for "$l#XX" (end of thread list)
+        if raw_data.len() == 2 && Self::is_hex_data(raw_data) {
+            // This might be a checksum for an "l" response, treat as end of thread list
+            return Ok(GdbResponse::ThreadInfo {
+                threads: vec![],
+                more_data: false,
+            });
         }
 
         // If it doesn't match expected formats, return as raw data
@@ -208,6 +236,14 @@ impl GdbResponse {
                 threads: vec![],
                 more_data: false,
             }),
+            // Handle raw thread info responses that might not be properly formatted
+            content if content.len() == 2 && Self::is_hex_data(content) => {
+                // This might be a malformed thread info response, treat as end of thread list
+                Ok(GdbResponse::ThreadInfo {
+                    threads: vec![],
+                    more_data: false,
+                })
+            },
 
             // qSupported response
             content
@@ -422,4 +458,3 @@ mod tests {
         }
     }
 }
-

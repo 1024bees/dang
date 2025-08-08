@@ -169,20 +169,68 @@ mod tests {
                 .expect("works");
         });
 
-        // Give the server time to start
-        sleep(Duration::from_millis(300));
+        // Wait for server to be ready with exponential backoff
+        let mut delay = Duration::from_millis(50);
+        let max_attempts = 10;
+        let mut connected = false;
 
-        // Connect with the client and run GDB initialization sequence
-        let mut cl = Client::new_with_port(port);
+        for attempt in 0..max_attempts {
+            sleep(delay);
+            match std::net::TcpStream::connect(format!("127.0.0.1:{}", port)) {
+                Ok(_) => {
+                    connected = true;
+                    break;
+                }
+                Err(_) => {
+                    if attempt < max_attempts - 1 {
+                        delay = std::cmp::min(delay * 2, Duration::from_millis(1000));
+                    }
+                }
+            }
+        }
+
+        if !connected {
+            panic!("Failed to connect to GDB server after {} attempts", max_attempts);
+        }
+
+        // Additional small delay to ensure server is fully ready
         sleep(Duration::from_millis(100));
 
-        cl.initialize_gdb_session()
-            .expect("Failed to initialize GDB session");
+        // Connect with the client and run GDB initialization sequence with retries
+        let result = retry_with_backoff(|| {
+            let mut cl = Client::new_with_port(port);
+            cl.initialize_gdb_session()
+        }, 3);
+
+        result.expect("Failed to initialize GDB session after retries");
 
         sleep(Duration::from_millis(100));
 
         // Kill the handle by not waiting for it to complete
         drop(handle);
+    }
+
+    // Helper function for retry logic with exponential backoff
+    fn retry_with_backoff<F, T, E>(mut f: F, max_attempts: u32) -> Result<T, E>
+    where
+        F: FnMut() -> Result<T, E>,
+    {
+        let mut delay = Duration::from_millis(100);
+        
+        for attempt in 0..max_attempts {
+            match f() {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    if attempt == max_attempts - 1 {
+                        return Err(e);
+                    }
+                    sleep(delay);
+                    delay = std::cmp::min(delay * 2, Duration::from_millis(500));
+                }
+            }
+        }
+        
+        unreachable!()
     }
 
     #[test]
