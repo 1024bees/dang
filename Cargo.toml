@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["dang", "shucks"]
+members = ["dang", "shucks", "jpdb"]
 default-members = ["dang"]
 
 [workspace.package]

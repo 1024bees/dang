@@ -44,6 +44,12 @@ pub enum GdbResponse {
         features: Vec<String>,
     },
 
+    /// qXfer response - for transferring special data
+    QXferData {
+        data: Vec<u8>,
+        is_final: bool, // true if this is the last chunk (starts with 'l'), false if more data ('m')
+    },
+
     /// Binary data with run-length encoding support
     BinaryData {
         data: Vec<u8>,
@@ -230,12 +236,36 @@ impl GdbResponse {
                 Self::parse_stop_reply(content)
             }
 
-            // Thread info responses
-            content if content.starts_with(b"m") => Self::parse_thread_info(content, false),
-            content if content == b"l" => Ok(GdbResponse::ThreadInfo {
-                threads: vec![],
-                more_data: false,
-            }),
+            // qXfer responses (m<data> or l<data>)
+            content if content.starts_with(b"m") => {
+                // This could be either thread info or qXfer data
+                // Try to parse as thread info first, then fall back to qXfer
+                if Self::looks_like_thread_info(&content[1..]) {
+                    Self::parse_thread_info(content, false)
+                } else {
+                    // Parse as qXfer data
+                    Ok(GdbResponse::QXferData {
+                        data: content[1..].to_vec(),
+                        is_final: false,
+                    })
+                }
+            }
+            content if content.starts_with(b"l") => {
+                // This could be end of thread info or final qXfer data
+                if content.len() == 1 {
+                    // Just 'l' - end of thread info
+                    Ok(GdbResponse::ThreadInfo {
+                        threads: vec![],
+                        more_data: false,
+                    })
+                } else {
+                    // 'l' followed by data - final qXfer chunk
+                    Ok(GdbResponse::QXferData {
+                        data: content[1..].to_vec(),
+                        is_final: true,
+                    })
+                }
+            }
             // Handle raw thread info responses that might not be properly formatted
             content if content.len() == 2 && Self::is_hex_data(content) => {
                 // This might be a malformed thread info response, treat as end of thread list
@@ -331,6 +361,23 @@ impl GdbResponse {
             })
     }
 
+    /// Check if content looks like thread info (comma-separated hex numbers)
+    fn looks_like_thread_info(content: &[u8]) -> bool {
+        if content.is_empty() {
+            return false;
+        }
+        
+        let content_str = match str::from_utf8(content) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        
+        // Thread info should be comma-separated hex numbers or special values
+        content_str.split(',').all(|part| {
+            part == "0" || part == "-1" || part.chars().all(|c| c.is_ascii_hexdigit())
+        })
+    }
+
     /// Decode hexadecimal data to bytes
     fn decode_hex(hex_data: &[u8]) -> Result<Vec<u8>, ParseError> {
         if hex_data.len() % 2 != 0 {
@@ -394,6 +441,16 @@ impl fmt::Display for GdbResponse {
             }
             GdbResponse::Supported { features } => {
                 write!(f, "Supported({} features)", features.len())
+            }
+            GdbResponse::QXferData { data, is_final } => {
+                let data_preview = String::from_utf8_lossy(&data[..data.len().min(32)]);
+                write!(
+                    f,
+                    "QXfer({} bytes, final={}, preview: '{}')",
+                    data.len(),
+                    is_final,
+                    data_preview
+                )
             }
             GdbResponse::BinaryData { data } => {
                 write!(f, "Binary({} bytes)", data.len())

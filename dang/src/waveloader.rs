@@ -250,13 +250,13 @@ mod tests {
     fn test_execute_get_signals() {
         // Get the path to the test script
         let cargo_manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let script_path = PathBuf::from(cargo_manifest_dir).join("test_data/ibex/signal_get.py");
+        let script_path = PathBuf::from(cargo_manifest_dir).join("../test_data/ibex/signal_get.py");
 
         // Read the script content
 
         // Define the function name and wave path
         let fn_name = "get_signals";
-        let wave_path = PathBuf::from(cargo_manifest_dir).join("test_data/ibex/sim.fst");
+        let wave_path = PathBuf::from(cargo_manifest_dir).join("../test_data/ibex/sim.fst");
 
         // Call the function
         let result = execute_get_signals(script_path.as_path(), fn_name, wave_path.as_path());

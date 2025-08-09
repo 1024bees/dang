@@ -278,4 +278,48 @@ mod tests {
         // Kill the handle by not waiting for it to complete
         drop(handle);
     }
+
+    #[test]
+    fn test_get_executable_path() {
+        use crate::commands::{Base, GdbCommand};
+
+        let (listener, port) = create_test_listener();
+
+        // Start dang GDB stub in a separate thread
+        let handle = thread::spawn(move || {
+            let workspace_root = std::env::current_dir()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_path_buf();
+
+            let wave_path = workspace_root.join("test_data/ibex/sim.fst");
+            let mapping_path = workspace_root.join("test_data/ibex/signal_get.py");
+            let elf_path = workspace_root.join("test_data/ibex/hello_test.elf");
+
+            dang::start_with_args_and_listener(wave_path, mapping_path, elf_path, listener)
+                .expect("works");
+        });
+
+        // Give the server time to start
+        sleep(Duration::from_millis(300));
+
+        // Connect with the client
+        let mut cl = Client::new_with_port(port);
+        sleep(Duration::from_millis(100));
+
+        // Test getting executable path
+        let exec_path = cl
+            .get_executable_path()
+            .expect("Failed to get executable path");
+        println!("Executable path: {}", exec_path);
+
+        // Verify the path contains our test ELF file
+        assert!(exec_path.contains("hello_test.elf"), "Path should contain hello_test.elf");
+
+        sleep(Duration::from_millis(100));
+
+        // Kill the handle by not waiting for it to complete
+        drop(handle);
+    }
 }

@@ -217,23 +217,16 @@ fn copy_range_to_buf(src: &[u8], offset: u64, length: usize, dest: &mut [u8]) ->
 impl target::ext::exec_file::ExecFile for Waver {
     fn get_exec_file(
         &self,
-        pid: Option<Pid>,
+        _pid: Option<Pid>,
         offset: u64,
         length: usize,
         buf: &mut [u8],
     ) -> TargetResult<usize, Self> {
-        copy_range_to_buf(
-            self.elf_path
-                .as_path()
-                .as_os_str()
-                .to_str()
-                .unwrap()
-                .as_bytes(),
-            offset,
-            length,
-            buf,
-        )
-        .map_err(|_| TargetError::NonFatal)
+        // According to GDB remote protocol, qXfer:exec-file:read should return the filename path, not file contents
+        let path_str = self.elf_path.to_string_lossy();
+        let path_bytes = path_str.as_bytes();
+
+        copy_range_to_buf(path_bytes, offset, length, buf).map_err(|_| TargetError::NonFatal)
     }
 }
 
@@ -570,5 +563,120 @@ impl target::ext::extended_mode::ConfigureWorkingDir for Waver {
 impl target::ext::extended_mode::CurrentActivePid for Waver {
     fn current_active_pid(&mut self) -> Result<Pid, Self::Error> {
         Ok(Pid::new(1).unwrap())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Waver;
+    use gdbstub::target::ext::exec_file::ExecFile;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_secure_exec_file_reading() {
+        // Get the path to the test ELF file
+        let cargo_manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let elf_path = PathBuf::from(cargo_manifest_dir).join("../test_data/ibex/hello_test.elf");
+        let wave_path = PathBuf::from(cargo_manifest_dir).join("../test_data/ibex/sim.fst");
+        let script_path = PathBuf::from(cargo_manifest_dir).join("../test_data/ibex/signal_get.py");
+
+        // Create a Waver instance with the test ELF file
+        let waver = match Waver::new(wave_path, script_path, elf_path.clone()) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("Failed to create Waver: {:?}", e);
+                panic!("Could not create test Waver instance");
+            }
+        };
+
+        // Test 1: Verify that get_exec_file returns the actual ELF contents
+        let mut buffer = vec![0u8; 1024];
+        let bytes_read = match waver.get_exec_file(None, 0, buffer.len(), &mut buffer) {
+            Ok(n) => n,
+            Err(_) => panic!("Should successfully read from executable"),
+        };
+
+        assert!(bytes_read > 0, "Should read some bytes from the executable");
+        assert!(
+            bytes_read <= buffer.len(),
+            "Should not read more than buffer size"
+        );
+
+        // Test 2: Verify it's reading actual ELF content (starts with ELF magic number)
+        assert_eq!(
+            &buffer[0..4],
+            &[0x7f, 0x45, 0x4c, 0x46],
+            "Should start with ELF magic number"
+        );
+
+        // Test 3: Verify reading from different offsets works
+        let mut small_buffer = vec![0u8; 16];
+        let bytes_read_offset =
+            match waver.get_exec_file(None, 4, small_buffer.len(), &mut small_buffer) {
+                Ok(n) => n,
+                Err(_) => panic!("Should successfully read from executable at offset"),
+            };
+        assert!(bytes_read_offset > 0, "Should read bytes from offset");
+
+        // Test 4: Verify reading beyond file end handles gracefully
+        let mut end_buffer = vec![0u8; 1024];
+        let file_size = std::fs::metadata(&elf_path).unwrap().len();
+        let bytes_read_end =
+            match waver.get_exec_file(None, file_size, end_buffer.len(), &mut end_buffer) {
+                Ok(n) => n,
+                Err(_) => panic!("Should handle reading beyond file end"),
+            };
+        assert_eq!(
+            bytes_read_end, 0,
+            "Reading beyond file end should return 0 bytes"
+        );
+    }
+
+    #[test]
+    fn test_exec_file_only_reads_designated_executable() {
+        // This test verifies that the ExecFile interface only accesses the designated executable
+        let cargo_manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let elf_path = PathBuf::from(cargo_manifest_dir).join("../test_data/ibex/hello_test.elf");
+        let wave_path = PathBuf::from(cargo_manifest_dir).join("../test_data/ibex/sim.fst");
+        let script_path = PathBuf::from(cargo_manifest_dir).join("../test_data/ibex/signal_get.py");
+
+        // Create Waver with specific ELF file
+        let waver = Waver::new(wave_path, script_path, elf_path.clone()).unwrap();
+
+        // Read the actual ELF file content directly for comparison
+        let expected_content = std::fs::read(&elf_path).unwrap();
+
+        // Read through the ExecFile interface
+        let mut actual_content = vec![0u8; expected_content.len()];
+        let bytes_read =
+            match waver.get_exec_file(None, 0, actual_content.len(), &mut actual_content) {
+                Ok(n) => n,
+                Err(_) => panic!("Should successfully read designated executable"),
+            };
+
+        // Verify that the ExecFile interface returns exactly the same content
+        actual_content.truncate(bytes_read);
+        assert_eq!(
+            actual_content, expected_content,
+            "ExecFile interface should return exact same content as the designated executable"
+        );
+    }
+
+    #[test]
+    fn test_host_io_disabled() {
+        // Verify that host I/O is properly disabled to prevent arbitrary file access
+        let cargo_manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let elf_path = PathBuf::from(cargo_manifest_dir).join("../test_data/ibex/hello_test.elf");
+        let wave_path = PathBuf::from(cargo_manifest_dir).join("../test_data/ibex/sim.fst");
+        let script_path = PathBuf::from(cargo_manifest_dir).join("../test_data/ibex/signal_get.py");
+
+        let mut waver = Waver::new(wave_path, script_path, elf_path).unwrap();
+
+        // Verify host_io support returns None (disabled)
+        assert!(
+            waver.support_host_io().is_none(),
+            "Host I/O should be disabled to prevent arbitrary file access"
+        );
     }
 }

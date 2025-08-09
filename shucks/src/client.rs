@@ -275,4 +275,23 @@ impl Client {
 
         Ok(())
     }
+
+    /// Get the executable file path from the remote target
+    pub fn get_executable_path(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+        let response = self.send_command_parsed(
+            Packet::Command(GdbCommand::Base(Base::QXferExecFile { 
+                offset: 0, 
+                length: 1000 
+            }))
+        )?;
+
+        match response {
+            crate::response::GdbResponse::QXferData { data, .. } => {
+                // The data should contain the executable path as a string
+                let path = String::from_utf8(data)?;
+                Ok(path)
+            }
+            _ => Err("Unexpected response format for qXfer:exec-file:read".into()),
+        }
+    }
 }

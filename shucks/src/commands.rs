@@ -23,6 +23,7 @@ pub enum Base {
     T,
     VKill,
     QStartNoAckMode,
+    QXferExecFile { offset: u32, length: u32 },
 }
 
 pub enum Resume {
@@ -79,6 +80,7 @@ impl Base {
             Self::QStartNoAckMode => "QStartNoAckMode",
             Self::QAttached => "qAttached",
             Self::T => "T",
+            Self::QXferExecFile { .. } => "qXfer:exec-file:read",
         }
     }
 
@@ -93,6 +95,9 @@ impl Base {
             }
             Self::LowerM { addr, length } => {
                 cursor.write_content(format!("{:x},{:x}", addr, length).as_bytes())?;
+            }
+            Self::QXferExecFile { offset, length } => {
+                cursor.write_content(format!("::{:x},{:x}", offset, length).as_bytes())?;
             }
             _ => {
                 // pass
