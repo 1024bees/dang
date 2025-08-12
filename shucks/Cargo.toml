@@ -12,6 +12,8 @@ license.workspace = true
 [dependencies]
 gdbstub = { workspace = true }
 gdbstub_arch = { workspace = true }
+goblin = "0.10"
+raki = "1.3.2"
 
 [dev-dependencies]
 dang = { path = "../dang" }

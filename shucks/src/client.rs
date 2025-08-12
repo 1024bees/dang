@@ -1,13 +1,40 @@
 use std::{
     io::{Read, Write},
     net::TcpStream,
+    fs,
 };
 
+use goblin::elf::Elf;
 use crate::{response::GdbResponse, Packet, commands::{GdbCommand, Base}};
 
 pub struct Client {
     strm: TcpStream,
     packet_scratch: [u8; 4096],
+    elf_info: Option<ElfInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ElfInfo {
+    pub entry_point: u64,
+    pub is_32bit: bool,
+    pub machine: u16,
+    pub text_section: Option<TextSectionInfo>,
+    pub symbols: Vec<SymbolInfo>,
+    pub elf_data: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TextSectionInfo {
+    pub addr: u64,
+    pub size: u64,
+    pub file_offset: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SymbolInfo {
+    pub name: String,
+    pub addr: u64,
+    pub size: u64,
 }
 
 impl Default for Client {
@@ -28,6 +55,7 @@ impl Client {
         Self {
             strm,
             packet_scratch: [0; 4096],
+            elf_info: None,
         }
     }
 
@@ -293,5 +321,153 @@ impl Client {
             }
             _ => Err("Unexpected response format for qXfer:exec-file:read".into()),
         }
+    }
+
+    /// Parse ELF file from the given path and store information
+    pub fn parse_elf_file(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let elf_data = fs::read(path)?;
+        let elf = Elf::parse(&elf_data)?;
+
+        // Check if it's 32-bit and RISC-V
+        let is_32bit = elf.header.e_ident[4] == 1; // EI_CLASS: ELFCLASS32
+        let is_riscv = elf.header.e_machine == 0xf3; // EM_RISCV
+
+        if !is_riscv {
+            return Err(format!("Not a RISC-V binary (machine type: 0x{:x})", elf.header.e_machine).into());
+        }
+
+        // Find .text section
+        let text_section = elf.section_headers
+            .iter()
+            .find(|sh| {
+                if let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) {
+                    name == ".text"
+                } else {
+                    false
+                }
+            })
+            .map(|sh| TextSectionInfo {
+                addr: sh.sh_addr,
+                size: sh.sh_size,
+                file_offset: sh.sh_offset,
+            });
+
+        // Extract symbols
+        let mut symbols = Vec::new();
+        for sym in &elf.syms {
+            if let Some(name_str) = elf.strtab.get_at(sym.st_name) {
+                if !name_str.is_empty() && sym.st_value != 0 {
+                    symbols.push(SymbolInfo {
+                        name: name_str.to_string(),
+                        addr: sym.st_value,
+                        size: sym.st_size,
+                    });
+                }
+            }
+        }
+
+        // Sort symbols by address for efficient lookup
+        symbols.sort_by_key(|s| s.addr);
+
+        self.elf_info = Some(ElfInfo {
+            entry_point: elf.header.e_entry,
+            is_32bit,
+            machine: elf.header.e_machine,
+            text_section,
+            symbols,
+            elf_data,
+        });
+
+        println!("Parsed {} ELF file: {} symbols, entry point: 0x{:x}", 
+                 if is_32bit { "32-bit" } else { "64-bit" },
+                 self.elf_info.as_ref().unwrap().symbols.len(),
+                 self.elf_info.as_ref().unwrap().entry_point);
+
+        Ok(())
+    }
+
+    /// Get 12 bytes of instruction data from ELF file starting at given PC
+    pub fn get_instruction_bytes_from_elf(&self, pc: u32) -> Result<[u8; 12], Box<dyn std::error::Error>> {
+        let elf_info = self.elf_info.as_ref()
+            .ok_or("No ELF file loaded. Call parse_elf_file() first")?;
+
+        let text_section = elf_info.text_section.as_ref()
+            .ok_or("No .text section found in ELF file")?;
+
+        // Check if PC is within .text section bounds
+        let pc_u64 = pc as u64;
+        if pc_u64 < text_section.addr || pc_u64 >= text_section.addr + text_section.size {
+            return Err(format!("PC 0x{:x} is outside .text section (0x{:x}-0x{:x})", 
+                              pc, text_section.addr, text_section.addr + text_section.size).into());
+        }
+
+        // Calculate offset in file
+        let offset_in_section = pc_u64 - text_section.addr;
+        let file_offset = text_section.file_offset + offset_in_section;
+
+        // Ensure we don't read past the section boundary
+        let available_bytes = (text_section.size - offset_in_section).min(12) as usize;
+        if available_bytes == 0 {
+            return Err("No bytes available at the specified PC".into());
+        }
+
+        // Read up to 12 bytes from the ELF data
+        let mut instruction_bytes = [0u8; 12];
+        let start_idx = file_offset as usize;
+        let end_idx = (start_idx + available_bytes).min(elf_info.elf_data.len());
+        
+        if start_idx >= elf_info.elf_data.len() {
+            return Err("File offset is beyond ELF data bounds".into());
+        }
+
+        let actual_bytes = end_idx - start_idx;
+        instruction_bytes[..actual_bytes].copy_from_slice(&elf_info.elf_data[start_idx..end_idx]);
+
+        Ok(instruction_bytes)
+    }
+
+    /// Find symbol containing the given address
+    pub fn find_symbol_at_address(&self, addr: u64) -> Option<(&SymbolInfo, u64)> {
+        let elf_info = self.elf_info.as_ref()?;
+        
+        // Binary search for the symbol containing this address
+        match elf_info.symbols.binary_search_by(|sym| {
+            if addr < sym.addr {
+                std::cmp::Ordering::Greater
+            } else if addr >= sym.addr + sym.size && sym.size > 0 {
+                std::cmp::Ordering::Less
+            } else if addr >= sym.addr && (sym.size == 0 || addr < sym.addr + sym.size) {
+                std::cmp::Ordering::Equal
+            } else {
+                std::cmp::Ordering::Less
+            }
+        }) {
+            Ok(idx) => {
+                let symbol = &elf_info.symbols[idx];
+                let offset = addr - symbol.addr;
+                Some((symbol, offset))
+            }
+            Err(idx) => {
+                // Check if we're in the previous symbol (for zero-size symbols)
+                if idx > 0 {
+                    let symbol = &elf_info.symbols[idx - 1];
+                    if addr >= symbol.addr {
+                        let offset = addr - symbol.addr;
+                        Some((symbol, offset))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Load and parse ELF file automatically from executable path
+    pub fn load_elf_info(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let elf_path = self.get_executable_path()?;
+        self.parse_elf_file(&elf_path)?;
+        Ok(())
     }
 }
