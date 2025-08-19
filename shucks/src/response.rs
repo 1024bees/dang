@@ -114,15 +114,26 @@ impl From<std::io::Error> for ParseError {
 impl GdbResponse {
     /// Parse raw response bytes into a structured GdbResponse
     pub fn parse(raw_data: &[u8]) -> Result<Self, ParseError> {
+        log::debug!("Parsing raw data ({} bytes): {:?}", 
+            raw_data.len(), 
+            String::from_utf8_lossy(raw_data));
+
         if raw_data.is_empty() {
+            log::debug!("Empty data -> GdbResponse::Empty");
             return Ok(GdbResponse::Empty);
         }
 
         // Handle acknowledgment responses
         if raw_data.len() == 1 {
             match raw_data[0] {
-                b'+' => return Ok(GdbResponse::Ack),
-                b'-' => return Ok(GdbResponse::Nack),
+                b'+' => {
+                    log::debug!("Parsed as ACK");
+                    return Ok(GdbResponse::Ack);
+                }
+                b'-' => {
+                    log::debug!("Parsed as NACK");
+                    return Ok(GdbResponse::Nack);
+                }
                 _ => {} // Fall through to packet parsing
             }
         }
@@ -213,7 +224,12 @@ impl GdbResponse {
 
     /// Parse the content portion of a GDB packet
     fn parse_content(content: &[u8]) -> Result<Self, ParseError> {
+        log::debug!("Parsing content ({} bytes): {:?}", 
+            content.len(), 
+            String::from_utf8_lossy(content));
+
         if content.is_empty() {
+            log::debug!("Empty content -> GdbResponse::Empty");
             return Ok(GdbResponse::Empty);
         }
 
@@ -287,20 +303,34 @@ impl GdbResponse {
             // Hex-encoded data (register or memory reads)
             content if Self::is_hex_data(content) => {
                 let data = Self::decode_hex(content)?;
+                
+                log::debug!("Decoded hex data: {} bytes", data.len());
 
                 // Heuristic: if it looks like register data (32-bit aligned, reasonable size)
                 if data.len() % 4 == 0 && data.len() <= 128 {
+                    log::debug!("Classified as RegisterData (divisible by 4 and <= 128 bytes)");
                     Ok(GdbResponse::RegisterData { data })
                 } else {
+                    log::debug!("Classified as MemoryData (length={}, divisible_by_4={}, <= 128={})", 
+                        data.len(), 
+                        data.len() % 4 == 0, 
+                        data.len() <= 128);
                     Ok(GdbResponse::MemoryData { data })
                 }
             }
 
             // Default: return as raw data
-            _ => Ok(GdbResponse::Raw {
-                data: content.to_vec(),
-            }),
+            _ => {
+                log::debug!("Classified as Raw data (no specific pattern matched)");
+                Ok(GdbResponse::Raw {
+                    data: content.to_vec(),
+                })
+            }
         }
+        .map(|response| {
+            log::debug!("Final parsed response: {}", response);
+            response
+        })
     }
 
     /// Parse stop reply packets (S or T packets)

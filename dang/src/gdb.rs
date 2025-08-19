@@ -383,7 +383,7 @@ impl target::ext::base::single_register_access::SingleRegisterAccess<()> for Wav
 impl target::ext::base::reverse_exec::ReverseCont<()> for Waver {
     fn reverse_cont(&mut self) -> Result<(), Self::Error> {
         // FIXME: actually implement reverse step
-        eprintln!(
+        log::info!(
             "FIXME: Not actually reverse-continuing. Performing forwards continue instead..."
         );
         self.exec_mode = ExecMode::Continue;
@@ -395,7 +395,7 @@ impl target::ext::base::reverse_exec::ReverseStep<()> for Waver {
     fn reverse_step(&mut self, _tid: ()) -> Result<(), Self::Error> {
         // FIXME: actually implement reverse step
 
-        eprintln!(
+        log::info!(
             "FIXME: Not actually reverse-stepping. Performing single forwards step instead..."
         );
         self.exec_mode = ExecMode::Step;
@@ -412,17 +412,17 @@ impl target::ext::base::singlethread::SingleThreadRangeStepping for Waver {
 
 impl target::ext::extended_mode::ExtendedMode for Waver {
     fn kill(&mut self, pid: Option<Pid>) -> TargetResult<ShouldTerminate, Self> {
-        eprintln!("GDB sent a kill request for pid {:?}", pid);
+        log::info!("GDB sent a kill request for pid {:?}", pid);
         Ok(ShouldTerminate::No)
     }
 
     fn restart(&mut self) -> Result<(), Self::Error> {
-        eprintln!("GDB sent a restart request");
+        log::info!("GDB sent a restart request");
         Ok(())
     }
 
     fn attach(&mut self, pid: Pid) -> TargetResult<(), Self> {
-        eprintln!("GDB attached to a process with PID {}", pid);
+        log::info!("GDB attached to a process with PID {}", pid);
         // stub implementation: just report the same code, but running under a
         // different pid.
 
@@ -444,9 +444,10 @@ impl target::ext::extended_mode::ExtendedMode for Waver {
             .map(|raw| core::str::from_utf8(raw).map_err(drop))
             .collect::<Result<Vec<_>, _>>()?;
 
-        eprintln!(
+        log::info!(
             "GDB tried to run a new process with filename {:?}, and args {:?}",
-            filename, args
+            filename,
+            args
         );
 
         self.reset();
@@ -456,7 +457,7 @@ impl target::ext::extended_mode::ExtendedMode for Waver {
     }
 
     fn query_if_attached(&mut self, pid: Pid) -> TargetResult<AttachKind, Self> {
-        eprintln!(
+        log::info!(
             "GDB queried if it was attached to a process with PID {}",
             pid
         );
@@ -501,7 +502,7 @@ impl target::ext::extended_mode::ExtendedMode for Waver {
 
 impl target::ext::extended_mode::ConfigureAslr for Waver {
     fn cfg_aslr(&mut self, enabled: bool) -> TargetResult<(), Self> {
-        eprintln!("GDB {} ASLR", if enabled { "enabled" } else { "disabled" });
+        log::info!("GDB {} ASLR", if enabled { "enabled" } else { "disabled" });
         Ok(())
     }
 }
@@ -515,20 +516,20 @@ impl target::ext::extended_mode::ConfigureEnv for Waver {
             Some(raw) => Some(core::str::from_utf8(raw).map_err(drop)?),
         };
 
-        eprintln!("GDB tried to set a new env var: {:?}={:?}", key, val);
+        log::info!("GDB tried to set a new env var: {:?}={:?}", key, val);
 
         Ok(())
     }
 
     fn remove_env(&mut self, key: &[u8]) -> TargetResult<(), Self> {
         let key = core::str::from_utf8(key).map_err(drop)?;
-        eprintln!("GDB tried to set remove a env var: {:?}", key);
+        log::info!("GDB tried to set remove a env var: {:?}", key);
 
         Ok(())
     }
 
     fn reset_env(&mut self) -> TargetResult<(), Self> {
-        eprintln!("GDB tried to reset env vars");
+        log::info!("GDB tried to reset env vars");
 
         Ok(())
     }
@@ -536,7 +537,7 @@ impl target::ext::extended_mode::ConfigureEnv for Waver {
 
 impl target::ext::extended_mode::ConfigureStartupShell for Waver {
     fn cfg_startup_with_shell(&mut self, enabled: bool) -> TargetResult<(), Self> {
-        eprintln!(
+        log::info!(
             "GDB {} startup with shell",
             if enabled { "enabled" } else { "disabled" }
         );
@@ -552,8 +553,8 @@ impl target::ext::extended_mode::ConfigureWorkingDir for Waver {
         };
 
         match dir {
-            None => eprintln!("GDB reset the working directory"),
-            Some(dir) => eprintln!("GDB set the working directory to {:?}", dir),
+            None => log::info!("GDB reset the working directory"),
+            Some(dir) => log::info!("GDB set the working directory to {:?}", dir),
         }
 
         Ok(())

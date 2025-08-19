@@ -565,7 +565,11 @@ name = "jpdb"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "dang",
+ "env_logger",
+ "log",
  "ratatui",
+ "shucks",
 ]
 
 [[package]]
@@ -1129,6 +1133,7 @@ dependencies = [
  "gdbstub",
  "gdbstub_arch",
  "goblin 0.10.0",
+ "log",
  "raki",
 ]
 

@@ -41,39 +41,39 @@ type DynResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 fn wait_for_tcp(port: u16) -> DynResult<TcpStream> {
     let sockaddr = format!("127.0.0.1:{}", port);
-    eprintln!("Waiting for a GDB connection on {:?}...", sockaddr);
+    log::warn!("Waiting for a GDB connection on {:?}...", sockaddr);
 
     let sock = TcpListener::bind(sockaddr)?;
     let actual_addr = sock.local_addr()?;
-    eprintln!("Actually bound to {:?}", actual_addr);
-    
+    log::warn!("Actually bound to {:?}", actual_addr);
+
     let (stream, addr) = sock.accept()?;
-    eprintln!("Debugger connected from {}", addr);
+    log::warn!("Debugger connected from {}", addr);
 
     Ok(stream)
 }
 
 pub fn wait_for_tcp_with_port(port: u16) -> DynResult<(TcpStream, u16)> {
     let sockaddr = format!("127.0.0.1:{}", port);
-    eprintln!("Waiting for a GDB connection on {:?}...", sockaddr);
+    log::warn!("Waiting for a GDB connection on {:?}...", sockaddr);
 
     let sock = TcpListener::bind(sockaddr)?;
     let actual_addr = sock.local_addr()?;
     let actual_port = actual_addr.port();
-    eprintln!("Actually bound to {:?}", actual_addr);
-    
+    log::warn!("Actually bound to {:?}", actual_addr);
+
     let (stream, addr) = sock.accept()?;
-    eprintln!("Debugger connected from {}", addr);
+    log::warn!("Debugger connected from {}", addr);
 
     Ok((stream, actual_port))
 }
 
 pub fn wait_for_tcp_with_listener(listener: TcpListener) -> DynResult<TcpStream> {
     let actual_addr = listener.local_addr()?;
-    eprintln!("Waiting for a GDB connection on {:?}...", actual_addr);
-    
+    log::warn!("Waiting for a GDB connection on {:?}...", actual_addr);
+
     let (stream, addr) = listener.accept()?;
-    eprintln!("Debugger connected from {}", addr);
+    log::warn!("Debugger connected from {}", addr);
 
     Ok(stream)
 }
@@ -88,11 +88,11 @@ fn wait_for_uds(path: &str) -> DynResult<UnixStream> {
         },
     }
 
-    eprintln!("Waiting for a GDB connection on {}...", path);
+    log::warn!("Waiting for a GDB connection on {}...", path);
 
     let sock = UnixListener::bind(path)?;
     let (stream, addr) = sock.accept()?;
-    eprintln!("Debugger connected from {:?}", addr);
+    log::warn!("Debugger connected from {:?}", addr);
 
     Ok(stream)
 }
@@ -168,8 +168,14 @@ pub fn start_with_args(wave_path: PathBuf, mapping_path: PathBuf, elf: PathBuf) 
     start_with_args_and_port(wave_path, mapping_path, elf, 9001)
 }
 
-pub fn start_with_args_and_port(wave_path: PathBuf, mapping_path: PathBuf, elf: PathBuf, port: u16) -> DynResult<()> {
-    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).try_init();
+pub fn start_with_args_and_port(
+    wave_path: PathBuf,
+    mapping_path: PathBuf,
+    elf: PathBuf,
+    port: u16,
+) -> DynResult<()> {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .try_init();
 
     log::info!("starting logger to stdout");
 
@@ -183,38 +189,44 @@ pub fn start_with_args_and_port(wave_path: PathBuf, mapping_path: PathBuf, elf: 
     match gdb.run_blocking::<DangGdbEventLoop>(&mut emu) {
         Ok(disconnect_reason) => match disconnect_reason {
             DisconnectReason::Disconnect => {
-                println!("GDB client has disconnected. Running to completion...");
+                log::info!("GDB client has disconnected. Running to completion...");
             }
             DisconnectReason::TargetExited(code) => {
-                println!("Target exited with code {}!", code)
+                log::info!("Target exited with code {}!", code)
             }
             DisconnectReason::TargetTerminated(sig) => {
-                println!("Target terminated with signal {}!", sig)
+                log::info!("Target terminated with signal {}!", sig)
             }
-            DisconnectReason::Kill => println!("GDB sent a kill command!"),
+            DisconnectReason::Kill => log::info!("GDB sent a kill command!"),
         },
         Err(e) => {
             if e.is_target_error() {
-                println!(
+                log::info!(
                     "target encountered a fatal error: {}",
                     e.into_target_error().unwrap()
                 )
             } else if e.is_connection_error() {
                 let (e, kind) = e.into_connection_error().unwrap();
-                println!("connection error: {:?} - {}", kind, e,)
+                log::info!("connection error: {:?} - {}", kind, e,)
             } else {
-                println!("gdbstub encountered a fatal error: {}", e)
+                log::info!("gdbstub encountered a fatal error: {}", e)
             }
         }
     }
 
-    println!("Program completed");
+    log::info!("Program completed");
 
     Ok(())
 }
 
-pub fn start_with_args_and_listener(wave_path: PathBuf, mapping_path: PathBuf, elf: PathBuf, listener: TcpListener) -> DynResult<()> {
-    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).try_init();
+pub fn start_with_args_and_listener(
+    wave_path: PathBuf,
+    mapping_path: PathBuf,
+    elf: PathBuf,
+    listener: TcpListener,
+) -> DynResult<()> {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .try_init();
 
     log::info!("starting logger to stdout");
 
@@ -228,32 +240,64 @@ pub fn start_with_args_and_listener(wave_path: PathBuf, mapping_path: PathBuf, e
     match gdb.run_blocking::<DangGdbEventLoop>(&mut emu) {
         Ok(disconnect_reason) => match disconnect_reason {
             DisconnectReason::Disconnect => {
-                println!("GDB client has disconnected. Running to completion...");
+                log::info!("GDB client has disconnected. Running to completion...");
             }
             DisconnectReason::TargetExited(code) => {
-                println!("Target exited with code {}!", code)
+                log::info!("Target exited with code {}!", code)
             }
             DisconnectReason::TargetTerminated(sig) => {
-                println!("Target terminated with signal {}!", sig)
+                log::info!("Target terminated with signal {}!", sig)
             }
-            DisconnectReason::Kill => println!("GDB sent a kill command!"),
+            DisconnectReason::Kill => log::info!("GDB sent a kill command!"),
         },
         Err(e) => {
             if e.is_target_error() {
-                println!(
+                log::info!(
                     "target encountered a fatal error: {}",
                     e.into_target_error().unwrap()
                 )
             } else if e.is_connection_error() {
                 let (e, kind) = e.into_connection_error().unwrap();
-                println!("connection error: {:?} - {}", kind, e,)
+                log::info!("connection error: {:?} - {}", kind, e,)
             } else {
-                println!("gdbstub encountered a fatal error: {}", e)
+                log::info!("gdbstub encountered a fatal error: {}", e)
             }
         }
     }
 
-    println!("Program completed");
+    log::info!("Program completed");
 
     Ok(())
 }
+
+pub fn start_with_args_and_listener_silent(
+    wave_path: PathBuf,
+    mapping_path: PathBuf,
+    elf: PathBuf,
+    listener: TcpListener,
+) -> DynResult<()> {
+    // Initialize logger with error level only to suppress most output
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error"))
+        .try_init();
+
+    let mut emu = Waver::new(wave_path, mapping_path, elf).expect("Could not create wave runtime");
+
+    let connection: Box<dyn ConnectionExt<Error = std::io::Error>> =
+        { Box::new(wait_for_tcp_with_listener(listener)?) };
+
+    let gdb = GdbStub::new(connection);
+
+    match gdb.run_blocking::<DangGdbEventLoop>(&mut emu) {
+        Ok(_disconnect_reason) => {
+            // Suppressed all disconnect reason output
+        }
+        Err(_e) => {
+            // Suppress all error output
+        }
+    }
+
+    // Suppress "Program completed" message
+
+    Ok(())
+}
+

@@ -16,7 +16,8 @@ license = "MIT"
 [workspace.dependencies]
 gdbstub = "0.7.6"
 gdbstub_arch = "0.3.0"
-
+log = "0.4.22"
+env_logger = "0.11.6"
 
 [profile.release]
 debug = true
