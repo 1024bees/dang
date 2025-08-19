@@ -318,21 +318,22 @@ impl GdbResponse {
                 );
                 log::info!("Decoded run-length + hex data: {} bytes", data.len());
 
-                // Heuristic: if it looks like register data (32-bit aligned, reasonable size)
+                // Use packet type to determine response classification
                 if packet.is_register_read() {
-                    log::debug!("Classified as RegisterData (divisible by 4 and <= 128 bytes)");
+                    log::debug!("Classified as RegisterData based on packet type (length={})", data.len());
                     Ok(GdbResponse::RegisterData { data })
                 } else if packet.is_memory_read() {
-                    log::debug!(
-                        "Classified as MemoryData (length={}, divisible_by_4={}, <= 128={})",
-                        data.len(),
-                        data.len() % 4 == 0,
-                        data.len() <= 128
-                    );
+                    log::debug!("Classified as MemoryData based on packet type (length={})", data.len());
                     Ok(GdbResponse::MemoryData { data })
                 } else {
-                    log::error!("Suprising, unhandled case");
-                    Ok(GdbResponse::Raw { data })
+                    // Fallback: use heuristic for unknown packet types
+                    if data.len() >= 128 && data.len() % 4 == 0 {
+                        log::debug!("Heuristically classified as RegisterData (length={}, divisible by 4)", data.len());
+                        Ok(GdbResponse::RegisterData { data })
+                    } else {
+                        log::debug!("Classified as Raw data (unknown packet type, length={})", data.len());
+                        Ok(GdbResponse::Raw { data })
+                    }
                 }
             }
 
