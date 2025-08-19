@@ -236,7 +236,7 @@ impl SingleThreadBase for Waver {
         regs: &mut <Riscv32 as Arch>::Registers,
     ) -> TargetResult<(), Self> {
         regs.pc = self.get_current_pc();
-        log::info!("reading pc; pc is {:?}", regs.pc);
+        log::info!("reading pc; pc is {:x}", regs.pc);
         for i in 0..32 {
             log::info!("regs {} is {:x}", i, self.get_current_gpr(i));
             regs.x[i] = self.get_current_gpr(i);

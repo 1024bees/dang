@@ -312,7 +312,11 @@ impl GdbResponse {
                 let run_length_decoded = Self::decode_run_length(content);
                 let data = Self::decode_hex(&run_length_decoded)?;
 
-                log::debug!("Decoded run-length + hex data: {} bytes", data.len());
+                log::info!(
+                    "Original content was {:?}",
+                    String::from_utf8_lossy(content)
+                );
+                log::info!("Decoded run-length + hex data: {} bytes", data.len());
 
                 // Heuristic: if it looks like register data (32-bit aligned, reasonable size)
                 if packet.is_register_read() {

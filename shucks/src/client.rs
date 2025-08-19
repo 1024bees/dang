@@ -507,6 +507,7 @@ impl Client {
                 // PC is usually the next 4 bytes after that
                 let pc_bytes = &data[128..132];
                 let pc = u32::from_le_bytes([pc_bytes[0], pc_bytes[1], pc_bytes[2], pc_bytes[3]]);
+                
                 Ok(pc)
             }
             _ => {
