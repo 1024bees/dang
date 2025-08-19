@@ -2,11 +2,12 @@ use std::io;
 
 use crate::packet::{FinishedPacket, PacketCursor};
 
+#[derive(Clone)]
 pub enum GdbCommand {
     Base(Base),
     Resume(Resume),
 }
-
+#[derive(Clone)]
 pub enum Base {
     QuestionMark,
     D,
@@ -26,6 +27,7 @@ pub enum Base {
     QXferExecFile { offset: u32, length: u32 },
 }
 
+#[derive(Clone)]
 pub enum Resume {
     Continue,
     Step,
@@ -106,3 +108,4 @@ impl Base {
         cursor.finish()
     }
 }
+

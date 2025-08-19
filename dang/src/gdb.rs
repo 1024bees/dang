@@ -238,6 +238,7 @@ impl SingleThreadBase for Waver {
         regs.pc = self.get_current_pc();
         log::info!("reading pc; pc is {:?}", regs.pc);
         for i in 0..32 {
+            log::info!("regs {} is {:x}", i, self.get_current_gpr(i));
             regs.x[i] = self.get_current_gpr(i);
         }
         Ok(())

@@ -64,7 +64,7 @@ impl Client {
         }
     }
 
-    pub fn send_command(&mut self, packet: Packet) -> Result<Vec<u8>, std::io::Error> {
+    pub fn send_command(&mut self, packet: &Packet) -> Result<Vec<u8>, std::io::Error> {
         let pkt = packet.to_finished_packet(self.packet_scratch.as_mut_slice())?;
         log::info!("Sending packet: {:?}", String::from_utf8_lossy(pkt.0));
         self.strm.write_all(pkt.0)?;
@@ -172,8 +172,8 @@ impl Client {
         &mut self,
         packet: Packet,
     ) -> Result<GdbResponse, Box<dyn std::error::Error>> {
-        let raw_response = self.send_command(packet)?;
-        let parsed_response = GdbResponse::parse(&raw_response)?;
+        let raw_response = self.send_command(&packet)?;
+        let parsed_response = GdbResponse::parse(&raw_response, &packet)?;
         log::info!("Parsed response: {parsed_response}");
         Ok(parsed_response)
     }
@@ -509,7 +509,11 @@ impl Client {
                 let pc = u32::from_le_bytes([pc_bytes[0], pc_bytes[1], pc_bytes[2], pc_bytes[3]]);
                 Ok(pc)
             }
-            _ => Err("Unexpected response format for register read".into()),
+            _ => {
+                log::error!("response is {}",registers);
+
+                Err("Unexpected response format for register read".into())
+            }
         }
     }
 
@@ -780,7 +784,7 @@ mod tests {
                         println!("Successfully retrieved PC: 0x{:08x}", pc);
                     }
                     Err(e) => {
-                        println!("Error getting PC from real dang instance: {}", e);
+                        panic!("Error getting PC from real dang instance: {}", e);
                         // For now, just log the error since we're testing against real instances
                     }
                 }
@@ -840,7 +844,8 @@ mod tests {
                 .collect::<String>();
             
             let packet = format!("${}#00", hex_string); // Using dummy checksum for test
-            let response = GdbResponse::parse(packet.as_bytes());
+            let packet_type= Packet::Command(GdbCommand::Base(Base::LowerG));
+            let response = GdbResponse::parse(packet.as_bytes(),&packet_type);
             
             log::info!("Test case {}: data length = {}, result = {:?}", i, register_data.len(), response);
             
@@ -850,15 +855,15 @@ mod tests {
                     log::info!("✓ Correctly parsed as RegisterData");
                 }
                 Ok(GdbResponse::MemoryData { data }) => {
-                    log::info!("⚠ Parsed as MemoryData instead of RegisterData (length={}, divisible by 4={})", 
+                    panic!("⚠ Parsed as MemoryData instead of RegisterData (length={}, divisible by 4={})", 
                         register_data.len(), 
                         register_data.len() % 4 == 0);
                 }
                 Ok(other) => {
-                    log::info!("⚠ Parsed as unexpected type: {:?}", other);
+                    panic!("⚠ Parsed as unexpected type: {:?}", other);
                 }
                 Err(e) => {
-                    log::info!("✗ Parse error: {:?}", e);
+                    panic!("✗ Parse error: {:?}", e);
                 }
             }
         }

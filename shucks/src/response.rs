@@ -1,5 +1,7 @@
 use std::{fmt, str};
 
+use crate::Packet;
+
 /// Represents the different types of responses from a GDB stub server
 #[derive(Debug, Clone, PartialEq)]
 pub enum GdbResponse {
@@ -113,10 +115,12 @@ impl From<std::io::Error> for ParseError {
 
 impl GdbResponse {
     /// Parse raw response bytes into a structured GdbResponse
-    pub fn parse(raw_data: &[u8]) -> Result<Self, ParseError> {
-        log::debug!("Parsing raw data ({} bytes): {:?}", 
-            raw_data.len(), 
-            String::from_utf8_lossy(raw_data));
+    pub fn parse(raw_data: &[u8], packet: &Packet) -> Result<Self, ParseError> {
+        log::debug!(
+            "Parsing raw data ({} bytes): {:?}",
+            raw_data.len(),
+            String::from_utf8_lossy(raw_data)
+        );
 
         if raw_data.is_empty() {
             log::debug!("Empty data -> GdbResponse::Empty");
@@ -141,12 +145,12 @@ impl GdbResponse {
         // Handle mixed ACK + packet response (e.g., "+$OK#9a")
         if raw_data.len() > 1 && raw_data[0] == b'+' && raw_data[1] == b'$' {
             // Skip the ACK and parse the packet part
-            return Self::parse_packet(&raw_data[1..]);
+            return Self::parse_packet(&raw_data[1..], &packet);
         }
 
         // Handle packet responses (format: $content#checksum)
         if raw_data[0] == b'$' {
-            return Self::parse_packet(raw_data);
+            return Self::parse_packet(raw_data, &packet);
         }
 
         // Handle malformed packets that are missing the '$' prefix (e.g., "OK#9a")
@@ -156,7 +160,7 @@ impl GdbResponse {
                     // This looks like a packet without the '$' prefix, add it and parse
                     let mut fixed_packet = vec![b'$'];
                     fixed_packet.extend_from_slice(raw_data);
-                    return Self::parse_packet(&fixed_packet);
+                    return Self::parse_packet(&fixed_packet, &packet);
                 }
             }
         }
@@ -183,7 +187,7 @@ impl GdbResponse {
     }
 
     /// Parse a GDB packet (starting with '$' and ending with '#xx')
-    fn parse_packet(data: &[u8]) -> Result<Self, ParseError> {
+    fn parse_packet(data: &[u8], packet: &Packet) -> Result<Self, ParseError> {
         if data.len() < 4 || data[0] != b'$' {
             return Err(ParseError::InvalidFormat);
         }
@@ -198,7 +202,7 @@ impl GdbResponse {
         if hash_pos + 3 > data.len() {
             // Try parsing without checksum verification
             let content = &data[1..hash_pos];
-            return Self::parse_content(content);
+            return Self::parse_content(content, packet);
         }
 
         if hash_pos + 3 != data.len() {
@@ -219,14 +223,16 @@ impl GdbResponse {
             return Err(ParseError::InvalidChecksum);
         }
 
-        Self::parse_content(content)
+        Self::parse_content(content, packet)
     }
 
     /// Parse the content portion of a GDB packet
-    fn parse_content(content: &[u8]) -> Result<Self, ParseError> {
-        log::debug!("Parsing content ({} bytes): {:?}", 
-            content.len(), 
-            String::from_utf8_lossy(content));
+    fn parse_content(content: &[u8], packet: &Packet) -> Result<Self, ParseError> {
+        log::debug!(
+            "Parsing content ({} bytes): {:?}",
+            content.len(),
+            String::from_utf8_lossy(content)
+        );
 
         if content.is_empty() {
             log::debug!("Empty content -> GdbResponse::Empty");
@@ -289,7 +295,7 @@ impl GdbResponse {
                     threads: vec![],
                     more_data: false,
                 })
-            },
+            }
 
             // qSupported response
             content
@@ -300,22 +306,29 @@ impl GdbResponse {
                 Self::parse_supported_response(content_str)
             }
 
-            // Hex-encoded data (register or memory reads)
-            content if Self::is_hex_data(content) => {
-                let data = Self::decode_hex(content)?;
-                
-                log::debug!("Decoded hex data: {} bytes", data.len());
+            // Hex-encoded data (register or memory reads) - always try run-length decoding first
+            content if Self::is_hex_data_or_run_length(content) => {
+                // Always decode run-length encoding first, then hex
+                let run_length_decoded = Self::decode_run_length(content);
+                let data = Self::decode_hex(&run_length_decoded)?;
+
+                log::debug!("Decoded run-length + hex data: {} bytes", data.len());
 
                 // Heuristic: if it looks like register data (32-bit aligned, reasonable size)
-                if data.len() % 4 == 0 && data.len() <= 128 {
+                if packet.is_register_read() {
                     log::debug!("Classified as RegisterData (divisible by 4 and <= 128 bytes)");
                     Ok(GdbResponse::RegisterData { data })
-                } else {
-                    log::debug!("Classified as MemoryData (length={}, divisible_by_4={}, <= 128={})", 
-                        data.len(), 
-                        data.len() % 4 == 0, 
-                        data.len() <= 128);
+                } else if packet.is_memory_read() {
+                    log::debug!(
+                        "Classified as MemoryData (length={}, divisible_by_4={}, <= 128={})",
+                        data.len(),
+                        data.len() % 4 == 0,
+                        data.len() <= 128
+                    );
                     Ok(GdbResponse::MemoryData { data })
+                } else {
+                    log::error!("Suprising, unhandled case");
+                    Ok(GdbResponse::Raw { data })
                 }
             }
 
@@ -391,21 +404,103 @@ impl GdbResponse {
             })
     }
 
+    /// Check if content appears to be hexadecimal data or contains run-length encoding
+    fn is_hex_data_or_run_length(content: &[u8]) -> bool {
+        if content.is_empty() {
+            return false;
+        }
+
+        // First check if it's pure hex data
+        if Self::is_hex_data(content) {
+            return true;
+        }
+
+        // Check if it contains run-length encoding patterns
+        let mut i = 0;
+        while i < content.len() {
+            if i + 2 < content.len() && content[i + 1] == b'*' {
+                // Found a potential run-length pattern: char + '*' + count
+                let repeated_char = content[i];
+                let repeat_count_char = content[i + 2];
+
+                // Verify the repeated char is hex and count is valid (>= 29)
+                if (repeated_char.is_ascii_digit()
+                    || (b'a'..=b'f').contains(&repeated_char)
+                    || (b'A'..=b'F').contains(&repeated_char))
+                    && repeat_count_char >= 29
+                {
+                    i += 3; // Skip this valid run-length sequence
+                } else {
+                    return false; // Invalid run-length pattern
+                }
+            } else {
+                // Must be hex character for non-run-length parts
+                let b = content[i];
+                if !(b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || (b'A'..=b'F').contains(&b))
+                {
+                    return false;
+                }
+                i += 1;
+            }
+        }
+
+        true
+    }
+
     /// Check if content looks like thread info (comma-separated hex numbers)
     fn looks_like_thread_info(content: &[u8]) -> bool {
         if content.is_empty() {
             return false;
         }
-        
+
         let content_str = match str::from_utf8(content) {
             Ok(s) => s,
             Err(_) => return false,
         };
-        
+
         // Thread info should be comma-separated hex numbers or special values
-        content_str.split(',').all(|part| {
-            part == "0" || part == "-1" || part.chars().all(|c| c.is_ascii_hexdigit())
-        })
+        content_str
+            .split(',')
+            .all(|part| part == "0" || part == "-1" || part.chars().all(|c| c.is_ascii_hexdigit()))
+    }
+
+    /// Decode run-length encoded data from GDB
+    /// Format: run of identical chars followed by '*' and repeat count (count+29)
+    /// Example: "0* " -> "0000" (space = ASCII 32, so 32-29=3 more repeats)
+    fn decode_run_length(data: &[u8]) -> Vec<u8> {
+        let mut result = Vec::new();
+        let mut i = 0;
+
+        while i < data.len() {
+            // Look for run-length encoding pattern: char + '*' + count
+            if i + 2 < data.len() && data[i + 1] == b'*' {
+                let repeated_char = data[i];
+                let repeat_count_char = data[i + 2];
+
+                // Decode the repeat count: n+29 encoding
+                if repeat_count_char >= 29 {
+                    let repeat_count = repeat_count_char - 29;
+
+                    // Add the original character plus the repeated characters
+                    // Total count = 1 (original) + repeat_count (additional)
+                    for _ in 0..=repeat_count {
+                        result.push(repeated_char);
+                    }
+
+                    i += 3; // Skip the char, '*', and count
+                } else {
+                    // Invalid encoding, treat as literal
+                    result.push(data[i]);
+                    i += 1;
+                }
+            } else {
+                // No run-length encoding, copy as-is
+                result.push(data[i]);
+                i += 1;
+            }
+        }
+
+        result
     }
 
     /// Decode hexadecimal data to bytes
@@ -503,23 +598,37 @@ mod tests {
 
     #[test]
     fn test_parse_ack() {
-        assert_eq!(GdbResponse::parse(b"+").unwrap(), GdbResponse::Ack);
-        assert_eq!(GdbResponse::parse(b"-").unwrap(), GdbResponse::Nack);
+        assert_eq!(
+            GdbResponse::parse(b"+", &Packet::default()).unwrap(),
+            GdbResponse::Ack
+        );
+        assert_eq!(
+            GdbResponse::parse(b"-", &Packet::default()).unwrap(),
+            GdbResponse::Nack
+        );
     }
 
     #[test]
     fn test_parse_empty() {
-        assert_eq!(GdbResponse::parse(b"$#00").unwrap(), GdbResponse::Empty);
+        assert_eq!(
+            GdbResponse::parse(b"$#00", &Packet::default()).unwrap(),
+            GdbResponse::Empty
+        );
     }
 
     #[test]
     fn test_parse_ok() {
-        assert_eq!(GdbResponse::parse(b"$OK#9a").unwrap(), GdbResponse::Ok);
+        assert_eq!(
+            GdbResponse::parse(b"$OK#9a", &Packet::default()).unwrap(),
+            GdbResponse::Ok
+        );
     }
 
     #[test]
     fn test_parse_error() {
-        if let GdbResponse::Error { code } = GdbResponse::parse(b"$E01#a6").unwrap() {
+        if let GdbResponse::Error { code } =
+            GdbResponse::parse(b"$E01#a6", &Packet::default()).unwrap()
+        {
             assert_eq!(code, 0x01);
         } else {
             panic!("Expected Error response");
@@ -530,7 +639,9 @@ mod tests {
     fn test_parse_hex_data() {
         // Calculate correct checksum for "deadbeef": 0xde + 0xad + 0xbe + 0xef = 0x3a8, 0xa8 % 256 = 0xa8
         // Actually: d+e+a+d+b+e+e+f = 0x64, so correct checksum is #64
-        if let GdbResponse::RegisterData { data } = GdbResponse::parse(b"$deadbeef#20").unwrap() {
+        if let GdbResponse::RegisterData { data } =
+            GdbResponse::parse(b"$deadbeef#20", &Packet::default()).unwrap()
+        {
             assert_eq!(data, vec![0xde, 0xad, 0xbe, 0xef]);
         } else {
             panic!("Expected RegisterData response");
@@ -539,9 +650,68 @@ mod tests {
 
     #[test]
     fn test_invalid_checksum() {
-        match GdbResponse::parse(b"$OK#00") {
+        match GdbResponse::parse(b"$OK#00", &Packet::default()) {
             Err(ParseError::InvalidChecksum) => {}
             _ => panic!("Expected checksum error"),
         }
+    }
+
+    #[test]
+    fn test_run_length_decoding() {
+        // Test the example from the spec: "0* " -> "0000"
+        // Space = ASCII 32, so 32-29=3 more repeats
+        let input = b"0* ";
+        let expected = b"0000";
+        let result = GdbResponse::decode_run_length(input);
+        assert_eq!(result, expected, "Should decode '0* ' to '0000'");
+
+        // Test no run-length encoding
+        let input = b"deadbeef";
+        let expected = b"deadbeef";
+        let result = GdbResponse::decode_run_length(input);
+        assert_eq!(result, expected, "Should pass through normal hex unchanged");
+
+        // Test multiple run-length sequences
+        let input = b"a*!b*\""; // a*(33-29=4 more), b*(34-29=5 more)
+        let expected = b"aaaaabbbbbb"; // 5 a's (1+4), 6 b's (1+5)
+        let result = GdbResponse::decode_run_length(input);
+        assert_eq!(
+            result, expected,
+            "Should handle multiple run-length sequences"
+        );
+
+        // Test edge case: minimum valid repeat count (29)
+        let input = b"x*\x1d"; // 29 in decimal = \x1d, so 29-29=0 more repeats
+        let expected = b"x";
+        let result = GdbResponse::decode_run_length(input);
+        assert_eq!(result, expected, "Should handle minimum repeat count");
+    }
+
+    #[test]
+    fn test_is_hex_data_or_run_length() {
+        // Pure hex data
+        assert!(GdbResponse::is_hex_data_or_run_length(b"deadbeef"));
+
+        // Run-length encoded data
+        assert!(GdbResponse::is_hex_data_or_run_length(b"0* "));
+
+        // Mixed hex and run-length
+        assert!(GdbResponse::is_hex_data_or_run_length(b"abc0* def"));
+
+        // Should reject invalid characters
+        assert!(!GdbResponse::is_hex_data_or_run_length(b"xyz"));
+        assert!(!GdbResponse::is_hex_data_or_run_length(b""));
+    }
+
+    #[test]
+    fn test_run_length_with_hex_parsing() {
+        // Test full integration: run-length decode then hex decode
+        // "0* " should become "0000" then decode to bytes [0x00, 0x00]
+        let input = b"0* ";
+        let run_length_decoded = GdbResponse::decode_run_length(input);
+        assert_eq!(run_length_decoded, b"0000");
+
+        let hex_decoded = GdbResponse::decode_hex(&run_length_decoded).unwrap();
+        assert_eq!(hex_decoded, vec![0x00, 0x00]);
     }
 }
