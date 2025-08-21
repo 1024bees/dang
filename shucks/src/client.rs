@@ -320,7 +320,7 @@ impl Client {
                 let path = String::from_utf8(data)?;
                 Ok(path)
             }
-            _ => Err("Unexpected response format for qXfer:exec-file:read".into()),
+            _ => Err(format!("Unexpected response format for qXfer:exec-file:read, got {response:?}").into()),
         }
     }
 
@@ -852,6 +852,11 @@ mod tests {
         );
     }
 
+    fn calculate_gdb_checksum(content: &str) -> String {
+        let checksum = content.bytes().fold(0u8, |acc, b| acc.wrapping_add(b));
+        format!("{:02x}", checksum)
+    }
+
     #[test]
     fn test_register_read_response_parsing_issue() {
         // Test that reproduces the jpdb "Unexpected response format for register read" issue
@@ -876,7 +881,8 @@ mod tests {
                 .map(|b| format!("{:02x}", b))
                 .collect::<String>();
             
-            let packet = format!("${}#00", hex_string); // Using dummy checksum for test
+            let checksum = calculate_gdb_checksum(&hex_string);
+            let packet = format!("${}#{}", hex_string, checksum);
             let packet_type= Packet::Command(GdbCommand::Base(Base::LowerG));
             let response = GdbResponse::parse(packet.as_bytes(),&packet_type);
             
@@ -887,7 +893,10 @@ mod tests {
                     assert_eq!(data.len(), register_data.len());
                     log::info!("✓ Correctly parsed as RegisterData");
                 }
-                Ok(GdbResponse::MemoryData { data }) => {
+                Ok(GdbResponse::Empty) if register_data.is_empty() => {
+                    log::info!("✓ Empty register data correctly parsed as Empty");
+                }
+                Ok(GdbResponse::MemoryData { data: _ }) => {
                     panic!("⚠ Parsed as MemoryData instead of RegisterData (length={}, divisible by 4={})", 
                         register_data.len(), 
                         register_data.len() % 4 == 0);

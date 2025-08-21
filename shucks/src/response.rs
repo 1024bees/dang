@@ -642,10 +642,13 @@ mod tests {
 
     #[test]
     fn test_parse_hex_data() {
-        // Calculate correct checksum for "deadbeef": 0xde + 0xad + 0xbe + 0xef = 0x3a8, 0xa8 % 256 = 0xa8
-        // Actually: d+e+a+d+b+e+e+f = 0x64, so correct checksum is #64
+        use crate::commands::{Base, GdbCommand};
+        use crate::Packet;
+        
+        // Test with proper register read context
+        let packet = Packet::Command(GdbCommand::Base(Base::LowerG));
         if let GdbResponse::RegisterData { data } =
-            GdbResponse::parse(b"$deadbeef#20", &Packet::default()).unwrap()
+            GdbResponse::parse(b"$deadbeef#20", &packet).unwrap()
         {
             assert_eq!(data, vec![0xde, 0xad, 0xbe, 0xef]);
         } else {
