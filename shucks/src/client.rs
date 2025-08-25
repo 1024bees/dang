@@ -10,7 +10,7 @@ use crate::{
     Packet,
 };
 use goblin::elf::Elf;
-use raki::{Decode, Isa};
+use raki::{Decode, DecodingError, Isa};
 
 pub struct Client {
     strm: TcpStream,
@@ -21,6 +21,19 @@ pub struct Client {
 pub enum PC {
     _64(u64),
     _32(u32)
+}
+
+use raki::Instruction as RVInst;
+
+
+pub struct Instruction(RVInst);
+
+impl std::fmt::Display for Instruction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f,"{}",self.0)
+    }
+
+
 }
 
 impl PC {
@@ -582,7 +595,7 @@ impl Client {
     }
 
     /// Show current instruction and next 3 instructions using raki decoder and ELF data
-    pub fn get_current_and_next_inst(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn get_current_and_next_inst(&mut self) -> Result<Vec<Option<Instruction>>,Box<dyn std::error::Error>> {
         // Get current PC using the dedicated method
         let pc = self.get_current_pc()?;
 
@@ -606,8 +619,21 @@ impl Client {
         } else {
             return Err("No ELF info available. Call load_elf_info() first".into());
         };
+        let mut rv = Vec::new();
+        for i in 0..(instruction_bytes.len()/4) {
+            let ichunk = &instruction_bytes[i..i+4];
+            rv.push(u32::from_le_bytes(ichunk.try_into().unwrap()).decode(Isa::Rv32).map(|val| Instruction(val)).ok());
+        }
 
-        Ok(())
+
+
+
+        //let rv= instruction_bytes.into_iter().array_chunks::<4>().map(|val| u32::from_le_bytes(val).decode(isa)).collect();
+
+
+        
+
+        Ok(rv)
     }
 }
     

@@ -568,6 +568,7 @@ dependencies = [
  "dang",
  "env_logger",
  "log",
+ "raki",
  "ratatui",
  "shucks",
 ]
