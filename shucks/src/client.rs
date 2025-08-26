@@ -571,29 +571,9 @@ impl Client {
 
                 Ok(PC::_32(pc))
             }
-            crate::response::GdbResponse::MemoryData { data } => {
-                log::warn!(
-                    "Got MemoryData instead of RegisterData, attempting PC extraction anyway"
-                );
-                if data.len() < 132 {
-                    return Err(format!(
-                        "Memory data too short to contain PC (got {} bytes, need 132)",
-                        data.len()
-                    )
-                    .into());
-                }
-                let pc_bytes = &data[128..132];
-                let pc = u32::from_le_bytes([pc_bytes[0], pc_bytes[1], pc_bytes[2], pc_bytes[3]]);
-                Ok(PC::_32(pc))
-            }
             _ => {
-                log::error!(
-                    "Unexpected response format for register read: {registers}"
-                );
-                Err(format!(
-                    "Unexpected response format for register read: {registers}"
-                )
-                .into())
+                log::error!("Unexpected response format for register read: {registers}");
+                Err(format!("Unexpected response format for register read: {registers}").into())
             }
         }
     }
@@ -601,7 +581,7 @@ impl Client {
     /// Show current instruction and next 3 instructions using raki decoder and ELF data
     pub fn get_current_and_next_inst(
         &mut self,
-    ) -> Result<Vec<Option<Instruction>>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<Instruction>, Box<dyn std::error::Error>> {
         // Get current PC using the dedicated method
         let pc = self.get_current_pc()?;
 
@@ -626,14 +606,39 @@ impl Client {
             return Err("No ELF info available. Call load_elf_info() first".into());
         };
         let mut rv = Vec::new();
-        for i in 0..(instruction_bytes.len() / 4) {
-            let ichunk = &instruction_bytes[i..i + 4];
-            rv.push(
-                u32::from_le_bytes(ichunk.try_into().unwrap())
-                    .decode(Isa::Rv32)
-                    .map(Instruction)
-                    .ok(),
-            );
+        let mut start = 0;
+        while start + 4 < 12 {
+            let ichunk1 = &instruction_bytes[start..start + 2];
+
+            let ichunk = &instruction_bytes[start..start + 4];
+
+            let uu16 = u16::from_le_bytes(ichunk1.try_into().unwrap());
+            let uu32 = u32::from_le_bytes(ichunk.try_into().unwrap());
+
+            let u16inst = uu16
+                .decode(Isa::Rv32)
+                .inspect_err(|e| log::error!("u16 err is {e:?}, 0x{uu16:x}"))
+                .inspect(|arg| log::info!("{arg}"))
+                .map(Instruction)
+                .ok();
+            let u32inst = uu32.decode(Isa::Rv32).map(Instruction).ok();
+            match (u16inst, u32inst) {
+                (Some(inst16), None) => {
+                    start += 2;
+                    rv.push(inst16);
+                }
+                (None, Some(inst32)) => {
+                    start += 4;
+                    rv.push(inst32)
+                }
+
+                _ => {
+                    if start == 0 {
+                        panic!("THERE S A BOMB IN MY CAR");
+                    }
+                    log::info!("Done")
+                }
+            }
         }
 
         //let rv= instruction_bytes.into_iter().array_chunks::<4>().map(|val| u32::from_le_bytes(val).decode(isa)).collect();
@@ -674,13 +679,12 @@ pub mod test_utils {
 mod tests {
     use super::test_utils::*;
     use super::*;
-    use raki::Isa;
-    
+
     use std::thread::sleep;
     use std::time::Duration;
 
     #[test]
-    fn test_decode_with_insufficient_data() {
+    fn test_get_instructions() {
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
@@ -690,75 +694,23 @@ mod tests {
         sleep(Duration::from_millis(300));
 
         // Connect with the client to actual dang instance
-        let client = Client::new_with_port(port);
+        let mut client = Client::new_with_port(port);
+        sleep(Duration::from_millis(200)); // Increased delay for stability
 
-        // Test with only 8 bytes (2 instructions)
-        let instruction_bytes = [
-            0x93, 0x00, 0x00, 0x00, // addi x1, x0, 0
-            0x13, 0x01, 0x10, 0x00, // addi x2, x0, 1
-        ];
+        client
+            .initialize_gdb_session()
+            .expect("failed to init gdb session for test inst");
+        sleep(Duration::from_millis(100)); // Increased delay for stability
 
-        let pc = 0x10000000;
-        let isa = Isa::Rv32;
+        client.load_elf_info().expect("Failed to load elf info");
 
-        // Should handle insufficient data gracefully
-        //let result = client.decode_and_display_instructions(pc, &instruction_bytes, isa);
-        //assert!(result.is_ok(), "Should handle insufficient data gracefully");
-
-        // Kill the handle by not waiting for it to complete
-        drop(handle);
-    }
-
-    #[test]
-    fn test_decode_with_invalid_instructions() {
-        let (listener, port) = create_test_listener();
-
-        // Start dang GDB stub in a separate thread
-        let handle = start_dang_instance(listener);
-
-        // Give the server time to start
-        sleep(Duration::from_millis(300));
-
-        // Connect with the client to actual dang instance
-        let client = Client::new_with_port(port);
-
-        // Test with invalid instruction bytes (all zeros except for valid patterns)
-        let instruction_bytes = [
-            0x00, 0x00, 0x00, 0x00, // Invalid instruction
-            0x00, 0x00, 0x00, 0x00, // Invalid instruction
-            0x00, 0x00, 0x00, 0x00, // Invalid instruction
-            0x00, 0x00, 0x00, 0x00, // Invalid instruction
-        ];
-
-        let pc = 0x10000000;
-        let isa = Isa::Rv32;
-
-        // Should handle decode errors gracefully
-        //let result = client.decode_and_display_instructions(pc, &instruction_bytes, isa);
-        //assert!(result.is_ok(), "Should handle decode errors gracefully");
+        let instructions = client
+            .get_current_and_next_inst()
+            .expect("Instructions not found");
+        assert_ne!(instructions.len(), 0);
 
         // Kill the handle by not waiting for it to complete
         drop(handle);
-    }
-
-    #[test]
-    fn test_pc_extraction_from_register_data() {
-        // Test the PC extraction logic separately
-        let mut register_data = [0u8; 132];
-
-        // Set PC bytes at offset 128-131 to 0x12345678 (little-endian)
-        register_data[128] = 0x78;
-        register_data[129] = 0x56;
-        register_data[130] = 0x34;
-        register_data[131] = 0x12;
-
-        let pc_bytes = &register_data[128..132];
-        let pc = u32::from_le_bytes([pc_bytes[0], pc_bytes[1], pc_bytes[2], pc_bytes[3]]);
-
-        assert_eq!(
-            pc, 0x12345678,
-            "PC should be correctly extracted from register data"
-        );
     }
 
     #[test]
@@ -792,9 +744,7 @@ mod tests {
                 }
             }
             Err(e) => {
-                panic!(
-                    "Error initializing GDB session with real dang instance: {e}"
-                );
+                panic!("Error initializing GDB session with real dang instance: {e}");
             }
         }
 
@@ -854,7 +804,7 @@ mod tests {
                 }
                 Ok(GdbResponse::MemoryData { data: _ }) => {
                     panic!("⚠ Parsed as MemoryData instead of RegisterData (length={}, divisible by 4={})", 
-                        register_data.len(), 
+                        register_data.len(),
                         register_data.len() % 4 == 0);
                 }
                 Ok(other) => {

@@ -54,10 +54,7 @@ mod tests {
     use super::*;
     use crate::client::test_utils::*;
     use crate::commands::{Base, GdbCommand, Resume};
-    use std::{
-        thread::sleep,
-        time::Duration,
-    };
+    use std::{thread::sleep, time::Duration};
 
     fn check_server_init_with_backoff(port: u16) {
         // Wait for server to be ready with exponential backoff
@@ -81,9 +78,7 @@ mod tests {
         }
 
         if !connected {
-            panic!(
-                "Failed to connect to GDB server after {max_attempts} attempts"
-            );
+            panic!("Failed to connect to GDB server after {max_attempts} attempts");
         }
     }
 
@@ -242,8 +237,7 @@ mod tests {
         // Connect with the client
         let mut cl = Client::new_with_port(port);
         sleep(Duration::from_millis(100));
-        cl
-            .initialize_gdb_session()
+        cl.initialize_gdb_session()
             .expect("Could not initialize gdb");
 
         // Test getting executable path
