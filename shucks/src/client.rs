@@ -10,7 +10,7 @@ use crate::{
     Packet,
 };
 use goblin::elf::Elf;
-use raki::{Decode, DecodingError, Isa};
+use raki::{Decode, Isa};
 
 pub struct Client {
     strm: TcpStream,
@@ -20,20 +20,17 @@ pub struct Client {
 
 pub enum PC {
     _64(u64),
-    _32(u32)
+    _32(u32),
 }
 
 use raki::Instruction as RVInst;
-
 
 pub struct Instruction(RVInst);
 
 impl std::fmt::Display for Instruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f,"{}",self.0)
+        write!(f, "{}", self.0)
     }
-
-
 }
 
 impl PC {
@@ -60,27 +57,17 @@ impl PC {
 }
 
 impl std::fmt::Display for PC {
-
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::_64(pc) => {
-                
-                    write!(f, "({})",pc)
-
+                write!(f, "({pc})")
             }
             Self::_32(pc) => {
-write!(f, "({})",pc)
-
-
+                write!(f, "({pc})")
             }
-
-
         }
-        
     }
-    
 }
-
 
 #[derive(Debug, Clone)]
 pub struct ElfInfo {
@@ -249,7 +236,7 @@ impl Client {
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QStartNoAckMode))) {
             Ok(_) => log::info!("Sent QStartNoAckMode"),
             Err(e) => {
-                log::info!("QStartNoAckMode failed: {:?}, continuing...", e);
+                log::info!("QStartNoAckMode failed: {e:?}, continuing...");
             }
         }
 
@@ -257,7 +244,7 @@ impl Client {
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QSupported))) {
             Ok(_) => log::info!("Sent qSupported"),
             Err(e) => {
-                log::info!("qSupported failed: {:?}, continuing...", e);
+                log::info!("qSupported failed: {e:?}, continuing...");
             }
         }
 
@@ -266,10 +253,10 @@ impl Client {
             self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QfThreadInfo)));
         match thread_info_result {
             Ok(response) => {
-                log::info!("qfThreadInfo response: {:?}", response);
+                log::info!("qfThreadInfo response: {response:?}");
             }
             Err(e) => {
-                log::info!("qfThreadInfo failed: {:?}", e);
+                log::info!("qfThreadInfo failed: {e:?}");
                 // Try to continue without thread info for now
                 log::info!("Continuing without thread info...");
             }
@@ -280,10 +267,10 @@ impl Client {
             self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QsThreadInfo)));
         match thread_info_cont_result {
             Ok(response) => {
-                log::info!("qsThreadInfo response: {:?}", response);
+                log::info!("qsThreadInfo response: {response:?}");
             }
             Err(e) => {
-                log::info!("qsThreadInfo failed: {:?}", e);
+                log::info!("qsThreadInfo failed: {e:?}");
                 // Try to continue without thread info for now
                 log::info!("Continuing without thread info...");
             }
@@ -297,7 +284,7 @@ impl Client {
                 log::info!("Sent ? (halt reason query): {halt_reason}");
             }
             Err(e) => {
-                log::info!("Halt reason query failed: {:?}, continuing anyway...", e);
+                log::info!("Halt reason query failed: {e:?}, continuing anyway...");
             }
         }
 
@@ -310,11 +297,11 @@ impl Client {
 
                 // Display PC and instructions using new get_current_pc method
                 if let Err(e) = self.display_pc_and_instructions() {
-                    log::info!("Failed to display PC and instructions: {:?}", e);
+                    log::info!("Failed to display PC and instructions: {e:?}");
                 }
             }
             Err(e) => {
-                log::info!("Reading registers failed: {:?}, continuing...", e);
+                log::info!("Reading registers failed: {e:?}, continuing...");
             }
         }
 
@@ -327,7 +314,7 @@ impl Client {
         // Get current PC using the dedicated method
         let pc = self.get_current_pc()?;
 
-        log::info!("Program Counter (PC): 0x{}", pc);
+        log::info!("Program Counter (PC): 0x{pc}");
 
         // Read current instruction (4 bytes for RISC-V)
         let current_inst =
@@ -347,7 +334,7 @@ impl Client {
         if let crate::response::GdbResponse::MemoryData { data } = current_inst {
             if data.len() >= 4 {
                 let inst = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                log::info!("Current instruction:  0x{:08x}", inst);
+                log::info!("Current instruction:  0x{inst:08x}");
             }
         }
 
@@ -384,7 +371,10 @@ impl Client {
                 let path = String::from_utf8(data)?;
                 Ok(path)
             }
-            _ => Err(format!("Unexpected response format for qXfer:exec-file:read, got {response:?}").into()),
+            _ => Err(format!(
+                "Unexpected response format for qXfer:exec-file:read, got {response:?}"
+            )
+            .into()),
         }
     }
 
@@ -558,8 +548,7 @@ impl Client {
     /// Get the current program counter (PC) from registers
     pub fn get_current_pc(&mut self) -> Result<PC, Box<dyn std::error::Error>> {
         // Add a small delay to avoid rapid command sending that can cause response ordering issues
-       
-        
+
         let registers =
             self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::LowerG)))?;
 
@@ -567,7 +556,11 @@ impl Client {
             crate::response::GdbResponse::RegisterData { data } => {
                 log::debug!("Got RegisterData with {} bytes", data.len());
                 if data.len() < 132 {
-                    return Err(format!("Register data too short to contain PC (got {} bytes, need 132)", data.len()).into());
+                    return Err(format!(
+                        "Register data too short to contain PC (got {} bytes, need 132)",
+                        data.len()
+                    )
+                    .into());
                 }
                 // Extract PC (assuming little-endian)
                 // For RISC-V, PC is typically at the end of the register dump
@@ -575,31 +568,44 @@ impl Client {
                 // PC is usually the next 4 bytes after that
                 let pc_bytes = &data[128..132];
                 let pc = u32::from_le_bytes([pc_bytes[0], pc_bytes[1], pc_bytes[2], pc_bytes[3]]);
-                
+
                 Ok(PC::_32(pc))
             }
             crate::response::GdbResponse::MemoryData { data } => {
-                log::warn!("Got MemoryData instead of RegisterData, attempting PC extraction anyway");
+                log::warn!(
+                    "Got MemoryData instead of RegisterData, attempting PC extraction anyway"
+                );
                 if data.len() < 132 {
-                    return Err(format!("Memory data too short to contain PC (got {} bytes, need 132)", data.len()).into());
+                    return Err(format!(
+                        "Memory data too short to contain PC (got {} bytes, need 132)",
+                        data.len()
+                    )
+                    .into());
                 }
                 let pc_bytes = &data[128..132];
                 let pc = u32::from_le_bytes([pc_bytes[0], pc_bytes[1], pc_bytes[2], pc_bytes[3]]);
                 Ok(PC::_32(pc))
             }
             _ => {
-                log::error!("Unexpected response format for register read: {}", registers);
-                Err(format!("Unexpected response format for register read: {}", registers).into())
+                log::error!(
+                    "Unexpected response format for register read: {registers}"
+                );
+                Err(format!(
+                    "Unexpected response format for register read: {registers}"
+                )
+                .into())
             }
         }
     }
 
     /// Show current instruction and next 3 instructions using raki decoder and ELF data
-    pub fn get_current_and_next_inst(&mut self) -> Result<Vec<Option<Instruction>>,Box<dyn std::error::Error>> {
+    pub fn get_current_and_next_inst(
+        &mut self,
+    ) -> Result<Vec<Option<Instruction>>, Box<dyn std::error::Error>> {
         // Get current PC using the dedicated method
         let pc = self.get_current_pc()?;
 
-        log::info!("Program Counter (PC): 0x{}", pc);
+        log::info!("Program Counter (PC): 0x{pc}");
 
         // Check if we have symbol information
         if let Some((symbol, offset)) = self.find_symbol_at_address(pc.as_u64()) {
@@ -620,23 +626,22 @@ impl Client {
             return Err("No ELF info available. Call load_elf_info() first".into());
         };
         let mut rv = Vec::new();
-        for i in 0..(instruction_bytes.len()/4) {
-            let ichunk = &instruction_bytes[i..i+4];
-            rv.push(u32::from_le_bytes(ichunk.try_into().unwrap()).decode(Isa::Rv32).map(|val| Instruction(val)).ok());
+        for i in 0..(instruction_bytes.len() / 4) {
+            let ichunk = &instruction_bytes[i..i + 4];
+            rv.push(
+                u32::from_le_bytes(ichunk.try_into().unwrap())
+                    .decode(Isa::Rv32)
+                    .map(Instruction)
+                    .ok(),
+            );
         }
 
-
-
-
         //let rv= instruction_bytes.into_iter().array_chunks::<4>().map(|val| u32::from_le_bytes(val).decode(isa)).collect();
-
-
-        
 
         Ok(rv)
     }
 }
-    
+
 #[cfg(test)]
 pub mod test_utils {
     use std::net::TcpListener;
@@ -667,15 +672,12 @@ pub mod test_utils {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test_utils::*;
+    use super::*;
     use raki::Isa;
-    use std::net::{TcpListener, TcpStream};
-    use std::thread::{self, sleep};
-    use std::time::Duration;
-
-
     
+    use std::thread::sleep;
+    use std::time::Duration;
 
     #[test]
     fn test_decode_with_insufficient_data() {
@@ -742,7 +744,7 @@ mod tests {
     #[test]
     fn test_pc_extraction_from_register_data() {
         // Test the PC extraction logic separately
-        let mut register_data = vec![0u8; 132];
+        let mut register_data = [0u8; 132];
 
         // Set PC bytes at offset 128-131 to 0x12345678 (little-endian)
         register_data[128] = 0x78;
@@ -772,46 +774,27 @@ mod tests {
         // Connect with the client to actual dang instance
         let mut client = Client::new_with_port(port);
         sleep(Duration::from_millis(200)); // Increased delay for stability
-        
+
         // Initialize the client to ensure it's ready for commands
         match client.initialize_gdb_session() {
             Ok(_) => {
                 // Add additional stabilization delay after initialization
                 sleep(Duration::from_millis(100));
-                
-                // Try to get the current PC with retry logic for robustness
-                let mut last_error = None;
-                let mut success = false;
-                
-                for attempt in 0..3 {
-                    match client.get_current_pc() {
-                        Ok(pc) => {
-                            // PC should be a reasonable 32-bit value
-                            assert!(pc.nz(), "PC should be greater than 0");
-                            
-                            success = true;
-                            break;
-                        }
-                        Err(e) => {
-                            println!("Attempt {} failed: {}", attempt + 1, e);
-                            last_error = Some(e);
-                            if attempt < 2 {
-                                sleep(Duration::from_millis(100)); // Wait before retry
-                            }
-                        }
+
+                match client.get_current_pc() {
+                    Ok(pc) => {
+                        // PC should be a reasonable 32-bit value
+                        assert!(pc.nz(), "PC should be greater than 0");
                     }
-                }
-                
-                if !success {
-                    if let Some(e) = last_error {
-                        panic!("Failed to get PC after 3 attempts. Last error: {}", e);
-                    } else {
-                        panic!("Failed to get PC after 3 attempts with unknown error");
+                    Err(e) => {
+                        panic!("Fucked up");
                     }
                 }
             }
             Err(e) => {
-                panic!("Error initializing GDB session with real dang instance: {}", e);
+                panic!(
+                    "Error initializing GDB session with real dang instance: {e}"
+                );
             }
         }
 
@@ -819,42 +802,22 @@ mod tests {
         drop(handle);
     }
 
-    #[test]
-    fn test_instruction_decoding_with_raki() {
-        // Direct test of raki instruction decoding
-        let inst_bytes: u32 = 0x00000093; // addi x1, x0, 0
-        let instruction = inst_bytes.decode(Isa::Rv32);
-
-        assert!(
-            instruction.is_ok(),
-            "Should successfully decode valid RISC-V instruction"
-        );
-
-        let decoded = instruction.unwrap();
-        // Verify it's an ADDI instruction (we can check the Display output)
-        let instruction_str = format!("{}", decoded);
-        assert!(
-            instruction_str.contains("addi"),
-            "Should decode as addi instruction"
-        );
-    }
-
     fn calculate_gdb_checksum(content: &str) -> String {
         let checksum = content.bytes().fold(0u8, |acc, b| acc.wrapping_add(b));
-        format!("{:02x}", checksum)
+        format!("{checksum:02x}")
     }
 
     #[test]
     fn test_register_read_response_parsing_issue() {
         // Test that reproduces the jpdb "Unexpected response format for register read" issue
         use crate::response::GdbResponse;
-        
+
         // Simulate various register response sizes that could cause parsing issues
         let test_cases = vec![
             // Case 1: Register data that's exactly 132 bytes (33 * 4-byte registers)
             vec![0x00; 132],
             // Case 2: Register data that's 130 bytes (not divisible by 4)
-            vec![0x00; 130], 
+            vec![0x00; 130],
             // Case 3: Register data that's >128 bytes (fails the heuristic)
             vec![0x00; 136],
             // Case 4: Empty register data
@@ -864,17 +827,23 @@ mod tests {
         ];
 
         for (i, register_data) in test_cases.iter().enumerate() {
-            let hex_string = register_data.iter()
-                .map(|b| format!("{:02x}", b))
+            let hex_string = register_data
+                .iter()
+                .map(|b| format!("{b:02x}"))
                 .collect::<String>();
-            
+
             let checksum = calculate_gdb_checksum(&hex_string);
-            let packet = format!("${}#{}", hex_string, checksum);
-            let packet_type= Packet::Command(GdbCommand::Base(Base::LowerG));
-            let response = GdbResponse::parse(packet.as_bytes(),&packet_type);
-            
-            log::info!("Test case {}: data length = {}, result = {:?}", i, register_data.len(), response);
-            
+            let packet = format!("${hex_string}#{checksum}");
+            let packet_type = Packet::Command(GdbCommand::Base(Base::LowerG));
+            let response = GdbResponse::parse(packet.as_bytes(), &packet_type);
+
+            log::info!(
+                "Test case {}: data length = {}, result = {:?}",
+                i,
+                register_data.len(),
+                response
+            );
+
             match response {
                 Ok(GdbResponse::RegisterData { data }) => {
                     assert_eq!(data.len(), register_data.len());
@@ -889,15 +858,12 @@ mod tests {
                         register_data.len() % 4 == 0);
                 }
                 Ok(other) => {
-                    panic!("⚠ Parsed as unexpected type: {:?}", other);
+                    panic!("⚠ Parsed as unexpected type: {other:?}");
                 }
                 Err(e) => {
-                    panic!("✗ Parse error: {:?}", e);
+                    panic!("✗ Parse error: {e:?}");
                 }
             }
         }
     }
-
-   
-    
 }

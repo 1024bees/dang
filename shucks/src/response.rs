@@ -145,12 +145,12 @@ impl GdbResponse {
         // Handle mixed ACK + packet response (e.g., "+$OK#9a")
         if raw_data.len() > 1 && raw_data[0] == b'+' && raw_data[1] == b'$' {
             // Skip the ACK and parse the packet part
-            return Self::parse_packet(&raw_data[1..], &packet);
+            return Self::parse_packet(&raw_data[1..], packet);
         }
 
         // Handle packet responses (format: $content#checksum)
         if raw_data[0] == b'$' {
-            return Self::parse_packet(raw_data, &packet);
+            return Self::parse_packet(raw_data, packet);
         }
 
         // Handle malformed packets that are missing the '$' prefix (e.g., "OK#9a")
@@ -160,7 +160,7 @@ impl GdbResponse {
                     // This looks like a packet without the '$' prefix, add it and parse
                     let mut fixed_packet = vec![b'$'];
                     fixed_packet.extend_from_slice(raw_data);
-                    return Self::parse_packet(&fixed_packet, &packet);
+                    return Self::parse_packet(&fixed_packet, packet);
                 }
             }
         }
@@ -320,18 +320,30 @@ impl GdbResponse {
 
                 // Use packet type to determine response classification
                 if packet.is_register_read() {
-                    log::debug!("Classified as RegisterData based on packet type (length={})", data.len());
+                    log::debug!(
+                        "Classified as RegisterData based on packet type (length={})",
+                        data.len()
+                    );
                     Ok(GdbResponse::RegisterData { data })
                 } else if packet.is_memory_read() {
-                    log::debug!("Classified as MemoryData based on packet type (length={})", data.len());
+                    log::debug!(
+                        "Classified as MemoryData based on packet type (length={})",
+                        data.len()
+                    );
                     Ok(GdbResponse::MemoryData { data })
                 } else {
                     // Fallback: use heuristic for unknown packet types
                     if data.len() >= 128 && data.len() % 4 == 0 {
-                        log::debug!("Heuristically classified as RegisterData (length={}, divisible by 4)", data.len());
+                        log::debug!(
+                            "Heuristically classified as RegisterData (length={}, divisible by 4)",
+                            data.len()
+                        );
                         Ok(GdbResponse::RegisterData { data })
                     } else {
-                        log::debug!("Classified as Raw data (unknown packet type, length={})", data.len());
+                        log::debug!(
+                            "Classified as Raw data (unknown packet type, length={})",
+                            data.len()
+                        );
                         Ok(GdbResponse::Raw { data })
                     }
                 }
@@ -346,7 +358,7 @@ impl GdbResponse {
             }
         }
         .map(|response| {
-            log::debug!("Final parsed response: {}", response);
+            log::debug!("Final parsed response: {response}");
             response
         })
     }
@@ -644,7 +656,7 @@ mod tests {
     fn test_parse_hex_data() {
         use crate::commands::{Base, GdbCommand};
         use crate::Packet;
-        
+
         // Test with proper register read context
         let packet = Packet::Command(GdbCommand::Base(Base::LowerG));
         if let GdbResponse::RegisterData { data } =

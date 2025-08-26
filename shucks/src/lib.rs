@@ -55,7 +55,7 @@ mod tests {
     use crate::client::test_utils::*;
     use crate::commands::{Base, GdbCommand, Resume};
     use std::{
-        thread::{self, sleep},
+        thread::sleep,
         time::Duration,
     };
 
@@ -67,7 +67,7 @@ mod tests {
 
         for attempt in 0..max_attempts {
             sleep(delay);
-            match std::net::TcpStream::connect(format!("127.0.0.1:{}", port)) {
+            match std::net::TcpStream::connect(format!("127.0.0.1:{port}")) {
                 Ok(_) => {
                     connected = true;
                     break;
@@ -82,8 +82,7 @@ mod tests {
 
         if !connected {
             panic!(
-                "Failed to connect to GDB server after {} attempts",
-                max_attempts
+                "Failed to connect to GDB server after {max_attempts} attempts"
             );
         }
     }
@@ -243,7 +242,7 @@ mod tests {
         // Connect with the client
         let mut cl = Client::new_with_port(port);
         sleep(Duration::from_millis(100));
-        let _ = cl
+        cl
             .initialize_gdb_session()
             .expect("Could not initialize gdb");
 
@@ -251,7 +250,7 @@ mod tests {
         let exec_path = cl
             .get_executable_path()
             .expect("Failed to get executable path");
-        println!("Executable path: {}", exec_path);
+        println!("Executable path: {exec_path}");
 
         // Verify the path contains our test ELF file
         assert!(

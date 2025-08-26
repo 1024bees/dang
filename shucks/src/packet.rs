@@ -27,7 +27,7 @@ impl<'a> PacketCursor<'a> {
         self.sum += sum;
         self.cursor.write(buf)
     }
-    
+
     pub fn finish(mut self) -> Result<FinishedPacket<'a>, std::io::Error> {
         let modsum = self.sum % 256;
         let str = format!("#{modsum:02x}");

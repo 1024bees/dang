@@ -96,10 +96,10 @@ impl Base {
                 cursor.write_content(b":xmlRegisters=riscv")?;
             }
             Self::LowerM { addr, length } => {
-                cursor.write_content(format!("{:x},{:x}", addr, length).as_bytes())?;
+                cursor.write_content(format!("{addr:x},{length:x}").as_bytes())?;
             }
             Self::QXferExecFile { offset, length } => {
-                cursor.write_content(format!("::{:x},{:x}", offset, length).as_bytes())?;
+                cursor.write_content(format!("::{offset:x},{length:x}").as_bytes())?;
             }
             _ => {
                 // pass
@@ -108,4 +108,3 @@ impl Base {
         cursor.finish()
     }
 }
-
