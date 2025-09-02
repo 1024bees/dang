@@ -2,6 +2,7 @@ use std::{
     fs,
     io::{Read, Write},
     net::TcpStream,
+    ops::Add,
 };
 
 use crate::{
@@ -18,18 +19,34 @@ pub struct Client {
     elf_info: Option<ElfInfo>,
 }
 
+#[derive(Copy, Clone)]
 pub enum PC {
     _64(u64),
     _32(u32),
 }
 
+impl PC {
+    fn add(&self, other: u32) -> Self {
+        match self {
+            Self::_64(a) => Self::_64(a + other as u64),
+            Self::_32(a) => Self::_32(a + other),
+        }
+    }
+}
+
 use raki::Instruction as RVInst;
 
-pub struct Instruction(RVInst);
+pub struct Instruction(RVInst, PC);
 
 impl std::fmt::Display for Instruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl Instruction {
+    pub fn pc(&self) -> &PC {
+        &self.1
     }
 }
 
@@ -619,9 +636,12 @@ impl Client {
                 .decode(Isa::Rv32)
                 .inspect_err(|e| log::error!("u16 err is {e:?}, 0x{uu16:x}"))
                 .inspect(|arg| log::info!("{arg}"))
-                .map(Instruction)
+                .map(|val| Instruction(val, pc.add(start as u32)))
                 .ok();
-            let u32inst = uu32.decode(Isa::Rv32).map(Instruction).ok();
+            let u32inst = uu32
+                .decode(Isa::Rv32)
+                .map(|val| Instruction(val, pc.add(start as u32)))
+                .ok();
             match (u16inst, u32inst) {
                 (Some(inst16), None) => {
                     start += 2;
