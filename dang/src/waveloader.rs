@@ -5,9 +5,7 @@ use anyhow::Result;
 use pyo3::prelude::*;
 use pyo3::PyResult;
 use pywellen::{self, pywellen as doggy};
-use wellen::{
-    self, LoadOptions, Signal, SignalValue, TimeTableIdx,
-};
+use wellen::{self, LoadOptions, Signal, SignalValue, TimeTableIdx};
 
 use std::{cmp::Ordering, collections::HashMap, fs, path::Path};
 use std::{cmp::Reverse, sync::Once};
@@ -67,7 +65,6 @@ impl WellenSignalExt for Signal {
         val
     }
 }
-
 
 #[derive(Debug, Eq)]
 struct Item<'a> {
@@ -135,7 +132,7 @@ impl Loaded {
 
         let body = wellen::viewers::read_body(header.body, &hierarchy, None)?;
 
-        let script_name = "get_signals";
+        let script_name = "get_gdb_signals";
         let mut py_signals =
             execute_get_signals(signal_py_file.as_path(), script_name, file_name.as_path())?;
 
@@ -235,7 +232,7 @@ mod tests {
         // Read the script content
 
         // Define the function name and wave path
-        let fn_name = "get_signals";
+        let fn_name = "get_gdb_signals";
         let wave_path = PathBuf::from(cargo_manifest_dir).join("../test_data/ibex/sim.fst");
 
         // Call the function
