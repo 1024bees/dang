@@ -2,7 +2,6 @@ use std::{
     fs,
     io::{Read, Write},
     net::TcpStream,
-    ops::Add,
 };
 
 use crate::{
@@ -691,7 +690,7 @@ impl Client {
         let instruction_bytes = self.get_instruction_bytes_from_elf(pc)?;
 
         // Determine ISA based on ELF info
-        let isa = if let Some(elf_info) = &self.elf_info {
+        let _isa = if let Some(elf_info) = &self.elf_info {
             if elf_info.is_32bit {
                 Isa::Rv32
             } else {

@@ -298,7 +298,7 @@ impl GdbResponse {
             }
 
             // qSupported response
-            content
+            _content
                 if content_str.contains("PacketSize")
                     || content_str.contains("qRelocInsn")
                     || content_str.contains("swbreak") =>
