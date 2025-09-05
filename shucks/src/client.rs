@@ -141,9 +141,52 @@ impl Client {
         let response = self.read_gdb_packet()?;
         log::info!("Read {} bytes", response.len());
 
+        // Validate response format and optionally checksum
+        if !self.is_valid_gdb_response(&response) {
+            log::warn!("Received potentially malformed GDB response: {:?}", 
+                       String::from_utf8_lossy(&response));
+        }
+
         let _tstr = String::from_utf8_lossy(response.as_slice());
 
         Ok(response)
+    }
+
+    /// Validate that a GDB response has proper format and optionally verify checksum
+    fn is_valid_gdb_response(&self, data: &[u8]) -> bool {
+        Self::validate_gdb_response(data)
+    }
+
+    /// Standalone function to validate GDB response format and checksum
+    fn validate_gdb_response(data: &[u8]) -> bool {
+        if data.is_empty() {
+            return false;
+        }
+
+        // Simple acknowledgments are always valid
+        if data.len() == 1 && (data[0] == b'+' || data[0] == b'-') {
+            return true;
+        }
+
+        // Check for proper packet format
+        let start_idx = if data.len() > 1 && data[0] == b'+' && data[1] == b'$' {
+            1
+        } else if !data.is_empty() && data[0] == b'$' {
+            0
+        } else {
+            return false;
+        };
+
+        // Find hash position and validate complete packet
+        if let Some(hash_pos) = data[start_idx..].iter().position(|&b| b == b'#') {
+            let hash_pos = start_idx + hash_pos;
+            if data.len() >= hash_pos + 3 {
+                // Packet format is correct, validate checksum
+                return Self::validate_checksum(data, start_idx, hash_pos);
+            }
+        }
+
+        false
     }
 
     /// Read a complete GDB packet, handling partial reads and multiple packets
@@ -204,8 +247,39 @@ impl Client {
         Ok(response)
     }
 
+    /// Validate GDB packet checksum
+    fn validate_checksum(data: &[u8], start_idx: usize, hash_pos: usize) -> bool {
+        if data.len() < hash_pos + 3 {
+            return false;
+        }
+
+        // Extract packet content (between $ and #)
+        let packet_content = &data[start_idx + 1..hash_pos];
+        
+        // Calculate expected checksum (modulo 256 sum)
+        let expected_checksum = packet_content.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+        
+        // Extract received checksum (2 hex digits after #)
+        let checksum_str = match std::str::from_utf8(&data[hash_pos + 1..hash_pos + 3]) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        
+        let received_checksum = match u8::from_str_radix(checksum_str, 16) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        
+        expected_checksum == received_checksum
+    }
+
     /// Check if we have a complete GDB response
     fn is_complete_response(&self, data: &[u8]) -> bool {
+        Self::check_complete_response(data)
+    }
+
+    /// Standalone function to check if we have a complete GDB response
+    fn check_complete_response(data: &[u8]) -> bool {
         if data.is_empty() {
             return false;
         }
@@ -221,16 +295,20 @@ impl Client {
         } else if !data.is_empty() && data[0] == b'$' {
             0
         } else {
-            // Not a standard packet, but might be a valid response
-            // Look for responses that don't follow standard format
-            return data.len() >= 2; // Assume complete if we have some data
+            // All GDB packets must follow the standard format with $ and # 
+            // No fallback for non-standard packets
+            return false;
         };
 
         // Look for the end of packet marker
         if let Some(hash_pos) = data[start_idx..].iter().position(|&b| b == b'#') {
             let hash_pos = start_idx + hash_pos;
-            // Check if we have the checksum (2 bytes after #)
-            return data.len() >= hash_pos + 3;
+            // Check if we have the complete packet including checksum
+            if data.len() >= hash_pos + 3 {
+                // Optionally validate checksum (can be disabled for performance)
+                // For now, just check format - checksum validation can be added if needed
+                return true;
+            }
         }
 
         false
@@ -835,5 +913,53 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_gdb_packet_validation_bug_fix() {
+        // Test checksum validation using standalone functions (no network needed)
+        
+        // Test valid checksum
+        let valid_packet = b"$OK#9a";
+        assert!(Client::validate_gdb_response(valid_packet), "Valid packet should pass checksum");
+
+        // Test invalid checksum
+        let invalid_packet = b"$OK#00";
+        assert!(!Client::validate_gdb_response(invalid_packet), "Invalid checksum should fail");
+
+        // Test acknowledgments (no checksum required)
+        assert!(Client::validate_gdb_response(b"+"), "ACK should be valid");
+        assert!(Client::validate_gdb_response(b"-"), "NACK should be valid");
+
+        // Test malformed packets - this is the main bug fix
+        assert!(!Client::validate_gdb_response(b"OK"), "Non-standard packet should be rejected");
+        assert!(!Client::validate_gdb_response(b"$OK"), "Packet without checksum should be rejected");
+        assert!(!Client::validate_gdb_response(b"$OK#9"), "Packet with incomplete checksum should be rejected");
+
+        // Test empty packet
+        let empty_packet = b"$#00";
+        assert!(Client::validate_gdb_response(empty_packet), "Empty packet with valid checksum should pass");
+
+        // Test that non-standard packets are now rejected (fixing the original bug)
+        assert!(!Client::check_complete_response(b"OK"), "Non-standard packet should be incomplete");
+        assert!(!Client::check_complete_response(b"some random data"), "Random data should be incomplete");
+        
+        // Test proper GDB packets are recognized as complete
+        assert!(Client::check_complete_response(b"$OK#9a"), "Standard packet should be complete");
+        assert!(Client::check_complete_response(b"$#00"), "Empty packet should be complete");
+        assert!(Client::check_complete_response(b"+$OK#9a"), "Ack + packet should be complete");
+        
+        // Test acknowledgments
+        assert!(Client::check_complete_response(b"+"), "ACK should be complete");
+        assert!(Client::check_complete_response(b"-"), "NACK should be complete");
+        
+        // Test incomplete packets
+        assert!(!Client::check_complete_response(b"$OK#9"), "Incomplete checksum should be incomplete");
+        assert!(!Client::check_complete_response(b"$OK"), "Missing checksum should be incomplete");
+
+        // Test basic checksum calculation
+        let content = "OK";
+        let checksum = content.bytes().fold(0u8, |acc, b| acc.wrapping_add(b));
+        assert_eq!(checksum, 0x9a); // 'O' (0x4f) + 'K' (0x4b) = 0x9a
     }
 }
