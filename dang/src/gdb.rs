@@ -364,9 +364,9 @@ impl target::ext::base::single_register_access::SingleRegisterAccess<()> for Wav
             _ => Err(TargetError::NonFatal),
         };
         if let Ok(ref inner) = rv {
-            log::info!("read reg {:?}, {:?} bytes at idx {:?}", reg_id, inner, idx);
+            log::info!("read reg {reg_id:?}, {inner:?} bytes at idx {idx:?}");
         } else {
-            log::error!("failed to read reg {:?}", reg_id);
+            log::error!("failed to read reg {reg_id:?}");
         }
         rv
     }
@@ -413,7 +413,7 @@ impl target::ext::base::singlethread::SingleThreadRangeStepping for Waver {
 
 impl target::ext::extended_mode::ExtendedMode for Waver {
     fn kill(&mut self, pid: Option<Pid>) -> TargetResult<ShouldTerminate, Self> {
-        log::info!("GDB sent a kill request for pid {:?}", pid);
+        log::info!("GDB sent a kill request for pid {pid:?}");
         Ok(ShouldTerminate::No)
     }
 
@@ -423,7 +423,7 @@ impl target::ext::extended_mode::ExtendedMode for Waver {
     }
 
     fn attach(&mut self, pid: Pid) -> TargetResult<(), Self> {
-        log::info!("GDB attached to a process with PID {}", pid);
+        log::info!("GDB attached to a process with PID {pid}");
         // stub implementation: just report the same code, but running under a
         // different pid.
 
@@ -446,9 +446,7 @@ impl target::ext::extended_mode::ExtendedMode for Waver {
             .collect::<Result<Vec<_>, _>>()?;
 
         log::info!(
-            "GDB tried to run a new process with filename {:?}, and args {:?}",
-            filename,
-            args
+            "GDB tried to run a new process with filename {filename:?}, and args {args:?}"
         );
 
         self.reset();
@@ -459,8 +457,7 @@ impl target::ext::extended_mode::ExtendedMode for Waver {
 
     fn query_if_attached(&mut self, pid: Pid) -> TargetResult<AttachKind, Self> {
         log::info!(
-            "GDB queried if it was attached to a process with PID {}",
-            pid
+            "GDB queried if it was attached to a process with PID {pid}"
         );
         Ok(AttachKind::Attach)
     }
@@ -517,14 +514,14 @@ impl target::ext::extended_mode::ConfigureEnv for Waver {
             Some(raw) => Some(core::str::from_utf8(raw).map_err(drop)?),
         };
 
-        log::info!("GDB tried to set a new env var: {:?}={:?}", key, val);
+        log::info!("GDB tried to set a new env var: {key:?}={val:?}");
 
         Ok(())
     }
 
     fn remove_env(&mut self, key: &[u8]) -> TargetResult<(), Self> {
         let key = core::str::from_utf8(key).map_err(drop)?;
-        log::info!("GDB tried to set remove a env var: {:?}", key);
+        log::info!("GDB tried to set remove a env var: {key:?}");
 
         Ok(())
     }
@@ -555,7 +552,7 @@ impl target::ext::extended_mode::ConfigureWorkingDir for Waver {
 
         match dir {
             None => log::info!("GDB reset the working directory"),
-            Some(dir) => log::info!("GDB set the working directory to {:?}", dir),
+            Some(dir) => log::info!("GDB set the working directory to {dir:?}"),
         }
 
         Ok(())
@@ -597,8 +594,7 @@ mod tests {
                 Err(_) => panic!("Should successfully read designated executable"),
             };
 
-        let br = PathBuf::try_from(String::from_utf8_lossy(actual_content.as_ref()).to_string())
-            .unwrap();
+        let br = PathBuf::from(String::from_utf8_lossy(actual_content.as_ref()).to_string());
 
         assert_eq!(
             br, expected_content,

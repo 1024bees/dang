@@ -532,12 +532,6 @@ impl Client {
             elf_data,
         });
 
-        log::info!(
-            "Parsed {} ELF file: {} symbols, entry point: 0x{:x}",
-            if is_32bit { "32-bit" } else { "64-bit" },
-            self.elf_info.as_ref().unwrap().symbols.len(),
-            self.elf_info.as_ref().unwrap().entry_point
-        );
 
         Ok(())
     }

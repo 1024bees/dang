@@ -13,12 +13,8 @@ use gdbstub::stub::DisconnectReason;
 use gdbstub::stub::GdbStub;
 use gdbstub::stub::SingleThreadStopReason;
 use gdbstub::target::Target;
-use gdbstub::{common::Signal, target::ext::extended_mode::ExtendedMode};
+use gdbstub::common::Signal;
 use std::net::TcpStream;
-#[cfg(unix)]
-use std::os::unix::net::UnixListener;
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
 use std::{net::TcpListener, path::PathBuf};
 
 #[derive(FromArgs, Debug, Clone)]
@@ -40,62 +36,44 @@ struct DangArgs {
 type DynResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 fn wait_for_tcp(port: u16) -> DynResult<TcpStream> {
-    let sockaddr = format!("127.0.0.1:{}", port);
-    log::warn!("Waiting for a GDB connection on {:?}...", sockaddr);
+    let sockaddr = format!("127.0.0.1:{port}");
+    log::warn!("Waiting for a GDB connection on {sockaddr:?}...");
 
     let sock = TcpListener::bind(sockaddr)?;
     let actual_addr = sock.local_addr()?;
-    log::warn!("Actually bound to {:?}", actual_addr);
+    log::warn!("Actually bound to {actual_addr:?}");
 
     let (stream, addr) = sock.accept()?;
-    log::warn!("Debugger connected from {}", addr);
+    log::warn!("Debugger connected from {addr}");
 
     Ok(stream)
 }
 
 pub fn wait_for_tcp_with_port(port: u16) -> DynResult<(TcpStream, u16)> {
-    let sockaddr = format!("127.0.0.1:{}", port);
-    log::warn!("Waiting for a GDB connection on {:?}...", sockaddr);
+    let sockaddr = format!("127.0.0.1:{port}");
+    log::warn!("Waiting for a GDB connection on {sockaddr:?}...");
 
     let sock = TcpListener::bind(sockaddr)?;
     let actual_addr = sock.local_addr()?;
     let actual_port = actual_addr.port();
-    log::warn!("Actually bound to {:?}", actual_addr);
+    log::warn!("Actually bound to {actual_addr:?}");
 
     let (stream, addr) = sock.accept()?;
-    log::warn!("Debugger connected from {}", addr);
+    log::warn!("Debugger connected from {addr}");
 
     Ok((stream, actual_port))
 }
 
 pub fn wait_for_tcp_with_listener(listener: TcpListener) -> DynResult<TcpStream> {
     let actual_addr = listener.local_addr()?;
-    log::warn!("Waiting for a GDB connection on {:?}...", actual_addr);
+    log::warn!("Waiting for a GDB connection on {actual_addr:?}...");
 
     let (stream, addr) = listener.accept()?;
-    log::warn!("Debugger connected from {}", addr);
+    log::warn!("Debugger connected from {addr}");
 
     Ok(stream)
 }
 
-#[cfg(unix)]
-fn wait_for_uds(path: &str) -> DynResult<UnixStream> {
-    match std::fs::remove_file(path) {
-        Ok(_) => {}
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound => {}
-            _ => return Err(e.into()),
-        },
-    }
-
-    log::warn!("Waiting for a GDB connection on {}...", path);
-
-    let sock = UnixListener::bind(path)?;
-    let (stream, addr) = sock.accept()?;
-    log::warn!("Debugger connected from {:?}", addr);
-
-    Ok(stream)
-}
 
 enum DangGdbEventLoop {}
 
@@ -192,10 +170,10 @@ pub fn start_with_args_and_port(
                 log::info!("GDB client has disconnected. Running to completion...");
             }
             DisconnectReason::TargetExited(code) => {
-                log::info!("Target exited with code {}!", code)
+                log::info!("Target exited with code {code}!")
             }
             DisconnectReason::TargetTerminated(sig) => {
-                log::info!("Target terminated with signal {}!", sig)
+                log::info!("Target terminated with signal {sig}!")
             }
             DisconnectReason::Kill => log::info!("GDB sent a kill command!"),
         },
@@ -207,9 +185,9 @@ pub fn start_with_args_and_port(
                 )
             } else if e.is_connection_error() {
                 let (e, kind) = e.into_connection_error().unwrap();
-                log::info!("connection error: {:?} - {}", kind, e,)
+                log::info!("connection error: {kind:?} - {e}",)
             } else {
-                log::info!("gdbstub encountered a fatal error: {}", e)
+                log::info!("gdbstub encountered a fatal error: {e}")
             }
         }
     }
@@ -243,10 +221,10 @@ pub fn start_with_args_and_listener(
                 log::info!("GDB client has disconnected. Running to completion...");
             }
             DisconnectReason::TargetExited(code) => {
-                log::info!("Target exited with code {}!", code)
+                log::info!("Target exited with code {code}!")
             }
             DisconnectReason::TargetTerminated(sig) => {
-                log::info!("Target terminated with signal {}!", sig)
+                log::info!("Target terminated with signal {sig}!")
             }
             DisconnectReason::Kill => log::info!("GDB sent a kill command!"),
         },
@@ -258,9 +236,9 @@ pub fn start_with_args_and_listener(
                 )
             } else if e.is_connection_error() {
                 let (e, kind) = e.into_connection_error().unwrap();
-                log::info!("connection error: {:?} - {}", kind, e,)
+                log::info!("connection error: {kind:?} - {e}",)
             } else {
-                log::info!("gdbstub encountered a fatal error: {}", e)
+                log::info!("gdbstub encountered a fatal error: {e}")
             }
         }
     }
