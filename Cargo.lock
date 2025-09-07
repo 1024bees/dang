@@ -1130,6 +1130,7 @@ name = "shucks"
 version = "0.1.0"
 dependencies = [
  "dang",
+ "env_logger",
  "gdbstub",
  "gdbstub_arch",
  "goblin 0.10.0",

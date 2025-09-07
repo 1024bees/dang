@@ -74,6 +74,10 @@ impl MonitorCmd for Waver {
         cmd: &[u8],
         mut out: ConsoleOutput<'_>,
     ) -> Result<(), Self::Error> {
+        log::info!(
+            "DANG SERVER: Received monitor command (QRcmd) with raw bytes: {:?}",
+            cmd
+        );
         let cmd = match core::str::from_utf8(cmd) {
             Ok(cmd) => cmd,
             Err(_) => {
@@ -81,11 +85,17 @@ impl MonitorCmd for Waver {
                 return Ok(());
             }
         };
+        log::info!("DANG SERVER: Processing monitor command: '{}'", cmd);
 
         match cmd {
             "" => outputln!(out,
                 "WHAT DID YOU SAY?! SPEAK UP! I WILL CRAWL THROUGH THE TERMINAL :)! I AM JUST BEING SILLY!"
             ),
+            "time_idx" => {
+                let time_idx = self.cursor.time_idx;
+                log::info!("DANG SERVER: time_idx command returning: {}", time_idx);
+                outputln!(out, "{}", time_idx)
+            },
             _ => outputln!(out, "I don't know how to handle '{}'", cmd),
         };
 
@@ -235,10 +245,11 @@ impl SingleThreadBase for Waver {
         &mut self,
         regs: &mut <Riscv32 as Arch>::Registers,
     ) -> TargetResult<(), Self> {
+        log::info!("DANG SERVER: Received read_registers command (LowerG)");
         regs.pc = self.get_current_pc();
         log::info!("reading pc; pc is {:x}", regs.pc);
         for i in 0..32 {
-            log::info!("regs {} is {:x}", i, self.get_current_gpr(i));
+            log::trace!("regs {} is {:x}", i, self.get_current_gpr(i));
             regs.x[i] = self.get_current_gpr(i);
         }
         Ok(())
@@ -259,10 +270,10 @@ impl SingleThreadBase for Waver {
     }
 
     fn read_addrs(&mut self, start_addr: u32, data: &mut [u8]) -> TargetResult<usize, Self> {
-        log::info!(
-            "reading memory from {:x} to {:x}",
+        log::info!("DANG SERVER: Received read_addrs command (LowerM) - reading memory from {:x} to {:x}, {} bytes",
             start_addr,
-            start_addr + data.len() as u32
+            start_addr + data.len() as u32,
+            data.len()
         );
         // this is a simple emulator, with RAM covering the entire 32 bit address space
         for (addr, val) in (start_addr..).zip(data.iter_mut()) {
@@ -445,9 +456,7 @@ impl target::ext::extended_mode::ExtendedMode for Waver {
             .map(|raw| core::str::from_utf8(raw).map_err(drop))
             .collect::<Result<Vec<_>, _>>()?;
 
-        log::info!(
-            "GDB tried to run a new process with filename {filename:?}, and args {args:?}"
-        );
+        log::info!("GDB tried to run a new process with filename {filename:?}, and args {args:?}");
 
         self.reset();
 
@@ -456,9 +465,7 @@ impl target::ext::extended_mode::ExtendedMode for Waver {
     }
 
     fn query_if_attached(&mut self, pid: Pid) -> TargetResult<AttachKind, Self> {
-        log::info!(
-            "GDB queried if it was attached to a process with PID {pid}"
-        );
+        log::info!("GDB queried if it was attached to a process with PID {pid}");
         Ok(AttachKind::Attach)
     }
 

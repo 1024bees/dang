@@ -10,7 +10,7 @@ use commands::{Base, GdbCommand};
 use packet::FinishedPacket;
 
 /// Top-Level GDB packet
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub enum Packet {
     #[default]
     Ack,
@@ -37,6 +37,14 @@ impl Packet {
         }
     }
 
+    pub fn is_monitor_command(&self) -> bool {
+        match self {
+            Self::Ack => false,
+            Self::Command(GdbCommand::Base(Base::QRcmd { .. })) => true,
+            Self::Command(_) => false,
+        }
+    }
+
     pub fn to_finished_packet<'a>(
         &self,
         slice: &'a mut [u8],
@@ -54,7 +62,19 @@ mod tests {
     use super::*;
     use crate::client::test_utils::*;
     use crate::commands::{Base, GdbCommand, Resume};
+    use std::sync::Once;
     use std::{thread::sleep, time::Duration};
+
+    static INIT: Once = Once::new();
+
+    fn init_logger() {
+        INIT.call_once(|| {
+            env_logger::Builder::from_default_env()
+                .filter_level(log::LevelFilter::Info)
+                .is_test(true)
+                .init();
+        });
+    }
 
     fn check_server_init_with_backoff(port: u16) {
         // Wait for server to be ready with exponential backoff
@@ -107,6 +127,7 @@ mod tests {
 
     #[test]
     fn sanity() {
+        init_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
@@ -126,6 +147,7 @@ mod tests {
 
     #[test]
     fn step_twice() {
+        init_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
@@ -166,6 +188,7 @@ mod tests {
 
     #[test]
     fn gdb_initialization() {
+        init_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
@@ -195,6 +218,7 @@ mod tests {
 
     #[test]
     fn test_parsed_responses() {
+        init_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
@@ -226,6 +250,7 @@ mod tests {
 
     #[test]
     fn test_get_executable_path() {
+        init_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread

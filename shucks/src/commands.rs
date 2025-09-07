@@ -2,12 +2,12 @@ use std::io;
 
 use crate::packet::{FinishedPacket, PacketCursor};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum GdbCommand {
     Base(Base),
     Resume(Resume),
 }
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Base {
     QuestionMark,
     D,
@@ -25,9 +25,10 @@ pub enum Base {
     VKill,
     QStartNoAckMode,
     QXferExecFile { offset: u32, length: u32 },
+    QRcmd { command: String },
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Resume {
     Continue,
     Step,
@@ -83,6 +84,7 @@ impl Base {
             Self::QAttached => "qAttached",
             Self::T => "T",
             Self::QXferExecFile { .. } => "qXfer:exec-file:read",
+            Self::QRcmd { .. } => "qRcmd",
         }
     }
 
@@ -100,6 +102,11 @@ impl Base {
             }
             Self::QXferExecFile { offset, length } => {
                 cursor.write_content(format!("::{offset:x},{length:x}").as_bytes())?;
+            }
+            Self::QRcmd { command } => {
+                // Hex encode the command string
+                let hex_command: String = command.bytes().map(|b| format!("{:02x}", b)).collect();
+                cursor.write_content(format!(",{}", hex_command).as_bytes())?;
             }
             _ => {
                 // pass

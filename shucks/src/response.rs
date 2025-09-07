@@ -57,6 +57,11 @@ pub enum GdbResponse {
         data: Vec<u8>,
     },
 
+    /// Monitor command output (qRcmd responses)
+    MonitorOutput {
+        output: String,
+    },
+
     /// Raw packet data for unrecognized responses
     Raw {
         data: Vec<u8>,
@@ -192,26 +197,23 @@ impl GdbResponse {
             return Err(ParseError::InvalidFormat);
         }
 
-        // Find the '#' separator
+        // Find the '#' separator - use position instead of rposition to get the first one
         let hash_pos = data
             .iter()
-            .rposition(|&b| b == b'#')
+            .position(|&b| b == b'#')
             .ok_or(ParseError::InvalidFormat)?;
 
-        // Handle case where checksum might be missing (some implementations)
+        // We need at least 2 more characters after # for checksum
         if hash_pos + 3 > data.len() {
             // Try parsing without checksum verification
             let content = &data[1..hash_pos];
             return Self::parse_content(content, packet);
         }
 
-        if hash_pos + 3 != data.len() {
-            return Err(ParseError::InvalidFormat);
-        }
-
         let content = &data[1..hash_pos];
-        let checksum_str =
-            str::from_utf8(&data[hash_pos + 1..]).map_err(|_| ParseError::InvalidFormat)?;
+        // Extract exactly 2 characters for checksum, ignore anything after
+        let checksum_str = str::from_utf8(&data[hash_pos + 1..hash_pos + 3])
+            .map_err(|_| ParseError::InvalidFormat)?;
 
         // Verify checksum
         let expected_checksum =
@@ -228,6 +230,7 @@ impl GdbResponse {
 
     /// Parse the content portion of a GDB packet
     fn parse_content(content: &[u8], packet: &Packet) -> Result<Self, ParseError> {
+        println!("parsing response to packet {packet:?}, data is {content:?}");
         log::debug!(
             "Parsing content ({} bytes): {:?}",
             content.len(),
@@ -304,6 +307,50 @@ impl GdbResponse {
                     || content_str.contains("swbreak") =>
             {
                 Self::parse_supported_response(content_str)
+            }
+
+            // Monitor command responses (typically for qRcmd)
+            content if packet.is_monitor_command() => {
+                // Monitor responses often come in the format "O<hex-encoded-text>"
+                // where 'O' indicates console output
+                let output = if content.starts_with(b"O") && content.len() > 1 {
+                    // Strip the 'O' prefix and decode the remaining hex
+                    println!("stripped hex content is {:?}", &content[1..]);
+                    let hex_content = &content[1..];
+                    if Self::is_hex_data(hex_content) {
+                        println!("hex content is hex data");
+                        match Self::decode_hex(hex_content) {
+                            Ok(decoded_bytes) => {
+                                println!("decoded bytes are {:?}", &decoded_bytes);
+                                String::from_utf8_lossy(&decoded_bytes).to_string()
+                            }
+                            Err(e) => {
+                                println!("error is {e:?} when decoding hex data");
+                                String::from_utf8_lossy(content).to_string()
+                            }
+                        }
+                    } else {
+                        String::from_utf8_lossy(content).to_string()
+                    }
+                } else if Self::is_hex_data(content) {
+                    println!("hex content is hex data");
+                    println!("unstripped hex content is {:?}", &content[1..]);
+
+                    // Try to decode as hex first
+                    match Self::decode_hex(content) {
+                        Ok(decoded_bytes) => {
+                            println!("decoded bytes are {:?}", &decoded_bytes);
+                            String::from_utf8_lossy(&decoded_bytes).to_string()
+                        }
+                        Err(e) => {
+                            println!("error is {e:?} when decoding hex data");
+                            String::from_utf8_lossy(content).to_string()
+                        }
+                    }
+                } else {
+                    String::from_utf8_lossy(content).to_string()
+                };
+                Ok(GdbResponse::MonitorOutput { output })
             }
 
             // Hex-encoded data (register or memory reads) - always try run-length decoding first
@@ -521,7 +568,7 @@ impl GdbResponse {
     }
 
     /// Decode hexadecimal data to bytes
-    fn decode_hex(hex_data: &[u8]) -> Result<Vec<u8>, ParseError> {
+    pub fn decode_hex(hex_data: &[u8]) -> Result<Vec<u8>, ParseError> {
         if hex_data.len() % 2 != 0 {
             return Err(ParseError::InvalidHex);
         }
@@ -597,6 +644,9 @@ impl fmt::Display for GdbResponse {
             GdbResponse::BinaryData { data } => {
                 write!(f, "Binary({} bytes)", data.len())
             }
+            GdbResponse::MonitorOutput { output } => {
+                write!(f, "Monitor({})", output.trim())
+            }
             GdbResponse::Raw { data } => {
                 write!(
                     f,
@@ -612,9 +662,22 @@ impl fmt::Display for GdbResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    fn init_logger() {
+        INIT.call_once(|| {
+            env_logger::Builder::from_default_env()
+                .filter_level(log::LevelFilter::Info)
+                .is_test(true)
+                .init();
+        });
+    }
 
     #[test]
     fn test_parse_ack() {
+        init_logger();
         assert_eq!(
             GdbResponse::parse(b"+", &Packet::default()).unwrap(),
             GdbResponse::Ack
@@ -627,6 +690,7 @@ mod tests {
 
     #[test]
     fn test_parse_empty() {
+        init_logger();
         assert_eq!(
             GdbResponse::parse(b"$#00", &Packet::default()).unwrap(),
             GdbResponse::Empty
@@ -635,6 +699,7 @@ mod tests {
 
     #[test]
     fn test_parse_ok() {
+        init_logger();
         assert_eq!(
             GdbResponse::parse(b"$OK#9a", &Packet::default()).unwrap(),
             GdbResponse::Ok
@@ -643,6 +708,7 @@ mod tests {
 
     #[test]
     fn test_parse_error() {
+        init_logger();
         if let GdbResponse::Error { code } =
             GdbResponse::parse(b"$E01#a6", &Packet::default()).unwrap()
         {
@@ -654,6 +720,7 @@ mod tests {
 
     #[test]
     fn test_parse_hex_data() {
+        init_logger();
         use crate::commands::{Base, GdbCommand};
         use crate::Packet;
 
@@ -670,6 +737,7 @@ mod tests {
 
     #[test]
     fn test_invalid_checksum() {
+        init_logger();
         match GdbResponse::parse(b"$OK#00", &Packet::default()) {
             Err(ParseError::InvalidChecksum) => {}
             _ => panic!("Expected checksum error"),
@@ -678,6 +746,7 @@ mod tests {
 
     #[test]
     fn test_run_length_decoding() {
+        init_logger();
         // Test the example from the spec: "0* " -> "0000"
         // Space = ASCII 32, so 32-29=3 more repeats
         let input = b"0* ";
@@ -709,6 +778,7 @@ mod tests {
 
     #[test]
     fn test_is_hex_data_or_run_length() {
+        init_logger();
         // Pure hex data
         assert!(GdbResponse::is_hex_data_or_run_length(b"deadbeef"));
 
@@ -725,6 +795,7 @@ mod tests {
 
     #[test]
     fn test_run_length_with_hex_parsing() {
+        init_logger();
         // Test full integration: run-length decode then hex decode
         // "0* " should become "0000" then decode to bytes [0x00, 0x00]
         let input = b"0* ";
