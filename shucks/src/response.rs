@@ -191,8 +191,7 @@ impl GdbResponse {
         })
     }
 
-    /// Parse a GDB packet (starting with '$' and ending with '#xx')
-    fn parse_packet(data: &[u8], packet: &Packet) -> Result<Self, ParseError> {
+    pub fn find_packet_data(data: &[u8]) -> Result<&[u8], ParseError> {
         if data.len() < 4 || data[0] != b'$' {
             return Err(ParseError::InvalidFormat);
         }
@@ -207,7 +206,7 @@ impl GdbResponse {
         if hash_pos + 3 > data.len() {
             // Try parsing without checksum verification
             let content = &data[1..hash_pos];
-            return Self::parse_content(content, packet);
+            return Ok(content);
         }
 
         let content = &data[1..hash_pos];
@@ -224,7 +223,12 @@ impl GdbResponse {
         if actual_checksum != expected_checksum {
             return Err(ParseError::InvalidChecksum);
         }
+        Ok(content)
+    }
 
+    /// Parse a GDB packet (starting with '$' and ending with '#xx')
+    fn parse_packet(data: &[u8], packet: &Packet) -> Result<Self, ParseError> {
+        let content = Self::find_packet_data(data)?;
         Self::parse_content(content, packet)
     }
 
@@ -662,22 +666,10 @@ impl fmt::Display for GdbResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Once;
-
-    static INIT: Once = Once::new();
-
-    fn init_logger() {
-        INIT.call_once(|| {
-            env_logger::Builder::from_default_env()
-                .filter_level(log::LevelFilter::Info)
-                .is_test(true)
-                .init();
-        });
-    }
 
     #[test]
     fn test_parse_ack() {
-        init_logger();
+        crate::init_test_logger();
         assert_eq!(
             GdbResponse::parse(b"+", &Packet::default()).unwrap(),
             GdbResponse::Ack
@@ -690,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_parse_empty() {
-        init_logger();
+        crate::init_test_logger();
         assert_eq!(
             GdbResponse::parse(b"$#00", &Packet::default()).unwrap(),
             GdbResponse::Empty
@@ -699,7 +691,7 @@ mod tests {
 
     #[test]
     fn test_parse_ok() {
-        init_logger();
+        crate::init_test_logger();
         assert_eq!(
             GdbResponse::parse(b"$OK#9a", &Packet::default()).unwrap(),
             GdbResponse::Ok
@@ -708,7 +700,7 @@ mod tests {
 
     #[test]
     fn test_parse_error() {
-        init_logger();
+        crate::init_test_logger();
         if let GdbResponse::Error { code } =
             GdbResponse::parse(b"$E01#a6", &Packet::default()).unwrap()
         {
@@ -720,7 +712,7 @@ mod tests {
 
     #[test]
     fn test_parse_hex_data() {
-        init_logger();
+        crate::init_test_logger();
         use crate::commands::{Base, GdbCommand};
         use crate::Packet;
 
@@ -737,7 +729,7 @@ mod tests {
 
     #[test]
     fn test_invalid_checksum() {
-        init_logger();
+        crate::init_test_logger();
         match GdbResponse::parse(b"$OK#00", &Packet::default()) {
             Err(ParseError::InvalidChecksum) => {}
             _ => panic!("Expected checksum error"),
@@ -746,7 +738,7 @@ mod tests {
 
     #[test]
     fn test_run_length_decoding() {
-        init_logger();
+        crate::init_test_logger();
         // Test the example from the spec: "0* " -> "0000"
         // Space = ASCII 32, so 32-29=3 more repeats
         let input = b"0* ";
@@ -778,7 +770,7 @@ mod tests {
 
     #[test]
     fn test_is_hex_data_or_run_length() {
-        init_logger();
+        crate::init_test_logger();
         // Pure hex data
         assert!(GdbResponse::is_hex_data_or_run_length(b"deadbeef"));
 
@@ -795,7 +787,7 @@ mod tests {
 
     #[test]
     fn test_run_length_with_hex_parsing() {
-        init_logger();
+        crate::init_test_logger();
         // Test full integration: run-length decode then hex decode
         // "0* " should become "0000" then decode to bytes [0x00, 0x00]
         let input = b"0* ";

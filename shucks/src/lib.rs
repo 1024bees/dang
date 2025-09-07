@@ -57,24 +57,26 @@ impl Packet {
     }
 }
 
+// Shared logger initialization for all tests
+#[cfg(test)]
+pub(crate) fn init_test_logger() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    
+    INIT.call_once(|| {
+        env_logger::Builder::from_default_env()
+            .filter_level(log::LevelFilter::Info)
+            .is_test(true)
+            .init();
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::client::test_utils::*;
     use crate::commands::{Base, GdbCommand, Resume};
-    use std::sync::Once;
     use std::{thread::sleep, time::Duration};
-
-    static INIT: Once = Once::new();
-
-    fn init_logger() {
-        INIT.call_once(|| {
-            env_logger::Builder::from_default_env()
-                .filter_level(log::LevelFilter::Info)
-                .is_test(true)
-                .init();
-        });
-    }
 
     fn check_server_init_with_backoff(port: u16) {
         // Wait for server to be ready with exponential backoff
@@ -127,7 +129,7 @@ mod tests {
 
     #[test]
     fn sanity() {
-        init_logger();
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
@@ -147,7 +149,7 @@ mod tests {
 
     #[test]
     fn step_twice() {
-        init_logger();
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
@@ -188,7 +190,7 @@ mod tests {
 
     #[test]
     fn gdb_initialization() {
-        init_logger();
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
@@ -218,7 +220,7 @@ mod tests {
 
     #[test]
     fn test_parsed_responses() {
-        init_logger();
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
@@ -250,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_get_executable_path() {
-        init_logger();
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread

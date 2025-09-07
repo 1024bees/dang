@@ -16,6 +16,7 @@ pub struct Client {
     strm: TcpStream,
     packet_scratch: [u8; 4096],
     elf_info: Option<ElfInfo>,
+    response_buffer: Vec<u8>,
 }
 
 #[derive(Copy, Clone)]
@@ -128,6 +129,18 @@ impl Client {
             strm,
             packet_scratch: [0; 4096],
             elf_info: None,
+            response_buffer: Vec::new(),
+        }
+    }
+
+    /// Drain any remaining data in the response buffer to ensure synchronization
+    fn drain_response_buffer(&mut self) {
+        if !self.response_buffer.is_empty() {
+            log::info!(
+                "Draining {} bytes from response buffer to maintain synchronization",
+                self.response_buffer.len()
+            );
+            self.response_buffer.clear();
         }
     }
 
@@ -195,39 +208,64 @@ impl Client {
         use std::io::ErrorKind;
         use std::time::{Duration, Instant};
 
-        let mut response = Vec::new();
-        let mut buffer = [0u8; 1024];
         let timeout = Duration::from_millis(2000);
         let start_time = Instant::now();
+
+        // First, check if we have a complete packet in the buffer from previous reads
+        if let Some((packet, remaining)) = Self::find_first_complete_packet(&self.response_buffer) {
+            self.response_buffer = remaining;
+            log::info!(
+                "Returned buffered packet, {} bytes remaining in buffer",
+                self.response_buffer.len()
+            );
+            return Ok(packet);
+        }
 
         // Set read timeout
         self.strm
             .set_read_timeout(Some(Duration::from_millis(500)))?;
 
+        let mut temp_buffer = [0u8; 1024];
+
         loop {
-            match self.strm.read(&mut buffer) {
+            match self.strm.read(&mut temp_buffer) {
                 Ok(0) => {
                     // EOF - connection closed
                     break;
                 }
                 Ok(n) => {
-                    response.extend_from_slice(&buffer[..n]);
+                    // Add new data to our response buffer
+                    self.response_buffer.extend_from_slice(&temp_buffer[..n]);
+                    log::debug!(
+                        "Read {} bytes, buffer now has {} bytes",
+                        n,
+                        self.response_buffer.len()
+                    );
 
-                    // Check if we have a complete response
-                    if self.is_complete_response(&response) {
-                        break;
+                    // Try to extract a complete packet from buffer
+                    if let Some((packet, remaining)) =
+                        Self::find_first_complete_packet(&self.response_buffer)
+                    {
+                        self.response_buffer = remaining;
+                        log::info!(
+                            "Extracted packet, {} bytes remaining in buffer",
+                            self.response_buffer.len()
+                        );
+                        self.strm.set_read_timeout(None)?;
+
+                        return Ok(packet);
                     }
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
                     // Timeout occurred, check if we have any partial data
-                    if !response.is_empty() && start_time.elapsed() < timeout {
+                    if !self.response_buffer.is_empty() && start_time.elapsed() < timeout {
                         // We have partial data, keep trying for a bit longer
                         continue;
-                    } else if response.is_empty() && start_time.elapsed() < timeout {
+                    } else if self.response_buffer.is_empty() && start_time.elapsed() < timeout {
                         // No data yet but still within overall timeout
                         continue;
                     } else {
-                        // Overall timeout exceeded, return what we have
+                        // Overall timeout exceeded
                         break;
                     }
                 }
@@ -245,7 +283,22 @@ impl Client {
         // Reset timeout
         self.strm.set_read_timeout(None)?;
 
-        Ok(response)
+        // If we have any data in buffer but no complete packet, return it as is
+        // This handles cases where server sends malformed data
+        if !self.response_buffer.is_empty() {
+            let data = self.response_buffer.clone();
+            self.response_buffer.clear();
+            log::warn!(
+                "Returning incomplete packet due to timeout: {} bytes",
+                data.len()
+            );
+            Ok(data)
+        } else {
+            Err(std::io::Error::new(
+                ErrorKind::TimedOut,
+                "No data received within timeout period",
+            ))
+        }
     }
 
     /// Validate GDB packet checksum
@@ -277,11 +330,13 @@ impl Client {
     }
 
     /// Check if we have a complete GDB response
+    #[allow(dead_code)]
     fn is_complete_response(&self, data: &[u8]) -> bool {
         Self::check_complete_response(data)
     }
 
     /// Standalone function to check if we have a complete GDB response
+    #[allow(dead_code)]
     fn check_complete_response(data: &[u8]) -> bool {
         if data.is_empty() {
             return false;
@@ -315,6 +370,18 @@ impl Client {
         }
 
         false
+    }
+
+    /// Find packet boundaries in buffer and return the first complete packet
+    /// Returns (packet_data, remaining_buffer) or None if no complete packet found
+    fn find_first_complete_packet(buffer: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+        let mdata = GdbResponse::find_packet_data(buffer).ok();
+        if let Some(data) = mdata {
+            let found = data.to_vec();
+            let remaining = buffer[data.len()..].to_vec();
+            return Some((found, remaining));
+        }
+        None
     }
 
     pub fn send_command_parsed(
@@ -421,6 +488,9 @@ impl Client {
         &mut self,
         cmd: &str,
     ) -> Result<String, Box<dyn std::error::Error>> {
+        // Drain any lingering responses before sending critical commands
+        self.drain_response_buffer();
+
         let monitor_packet = Packet::Command(GdbCommand::Base(Base::QRcmd {
             command: cmd.to_string(),
         }));
@@ -800,24 +870,12 @@ mod tests {
     use super::test_utils::*;
     use super::*;
 
-    use std::sync::Once;
     use std::thread::sleep;
     use std::time::Duration;
 
-    static INIT: Once = Once::new();
-
-    fn init_logger() {
-        INIT.call_once(|| {
-            env_logger::Builder::from_default_env()
-                .filter_level(log::LevelFilter::Info)
-                .is_test(true)
-                .init();
-        });
-    }
-
     #[test]
     fn test_get_instructions() {
-        init_logger();
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
@@ -848,7 +906,7 @@ mod tests {
 
     #[test]
     fn test_get_current_pc_method() {
-        init_logger();
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
@@ -872,7 +930,7 @@ mod tests {
                         // PC should be a reasonable 32-bit value
                         assert!(pc.nz(), "PC should be greater than 0");
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         panic!("AHHHH FUCK WE CANT GET PC NOOOOOOO AAAHHH FILE AN ISSUE ! I WILL KNOW NO PEACE! FILE AN ISSUE ON GITHUB AND PLEASE BE NICE TO ME!");
                     }
                 }
@@ -893,7 +951,7 @@ mod tests {
 
     #[test]
     fn test_register_read_response_parsing_issue() {
-        init_logger();
+        crate::init_test_logger();
         // Test that reproduces the jpdb "Unexpected response format for register read" issue
         use crate::response::GdbResponse;
 
@@ -954,7 +1012,7 @@ mod tests {
 
     #[test]
     fn test_gdb_packet_validation_bug_fix() {
-        init_logger();
+        crate::init_test_logger();
         // Test checksum validation using standalone functions (no network needed)
 
         // Test valid checksum
@@ -1048,7 +1106,7 @@ mod tests {
 
     #[test]
     fn test_time_idx_command() {
-        init_logger();
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
