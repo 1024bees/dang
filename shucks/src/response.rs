@@ -91,7 +91,7 @@ pub enum StopReason {
 /// Error type for response parsing
 #[derive(Debug)]
 pub enum ParseError {
-    InvalidFormat,
+    InvalidFormat(&'static str),
     InvalidChecksum,
     InvalidHex,
     IncompletePacket,
@@ -101,7 +101,7 @@ pub enum ParseError {
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParseError::InvalidFormat => write!(f, "Invalid packet format"),
+            ParseError::InvalidFormat(e) => write!(f, "Invalid packet format : {e}"),
             ParseError::InvalidChecksum => write!(f, "Invalid checksum"),
             ParseError::InvalidHex => write!(f, "Invalid hexadecimal data"),
             ParseError::IncompletePacket => write!(f, "Incomplete packet"),
@@ -118,101 +118,52 @@ impl From<std::io::Error> for ParseError {
     }
 }
 
-impl GdbResponse {
-    /// Parse raw response bytes into a structured GdbResponse
-    pub fn parse(raw_data: &[u8], packet: &Packet) -> Result<Self, ParseError> {
-        log::debug!(
-            "Parsing raw data ({} bytes): {:?}",
-            raw_data.len(),
-            String::from_utf8_lossy(raw_data)
-        );
+/// GdbResponse data, sans the checksum -- if this exists, the checksum has already been validated
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawGdbResponse(Vec<u8>);
 
-        if raw_data.is_empty() {
-            log::debug!("Empty data -> GdbResponse::Empty");
-            return Ok(GdbResponse::Empty);
-        }
-
-        // Handle acknowledgment responses
-        if raw_data.len() == 1 {
-            match raw_data[0] {
-                b'+' => {
-                    log::debug!("Parsed as ACK");
-                    return Ok(GdbResponse::Ack);
-                }
-                b'-' => {
-                    log::debug!("Parsed as NACK");
-                    return Ok(GdbResponse::Nack);
-                }
-                _ => {} // Fall through to packet parsing
-            }
-        }
-
-        // Handle mixed ACK + packet response (e.g., "+$OK#9a")
-        if raw_data.len() > 1 && raw_data[0] == b'+' && raw_data[1] == b'$' {
-            // Skip the ACK and parse the packet part
-            return Self::parse_packet(&raw_data[1..], packet);
-        }
-
-        // Handle packet responses (format: $content#checksum)
-        if raw_data[0] == b'$' {
-            return Self::parse_packet(raw_data, packet);
-        }
-
-        // Handle malformed packets that are missing the '$' prefix (e.g., "OK#9a")
-        if raw_data.len() >= 4 {
-            if let Some(hash_pos) = raw_data.iter().rposition(|&b| b == b'#') {
-                if hash_pos + 3 == raw_data.len() {
-                    // This looks like a packet without the '$' prefix, add it and parse
-                    let mut fixed_packet = vec![b'$'];
-                    fixed_packet.extend_from_slice(raw_data);
-                    return Self::parse_packet(&fixed_packet, packet);
-                }
-            }
-        }
-
-        // Handle other simple responses that may not be packets
-        if raw_data == b"OK" {
-            return Ok(GdbResponse::Ok);
-        }
-
-        // Handle special cases for thread info responses
-        // "9a" might be a checksum for "$l#XX" (end of thread list)
-        if raw_data.len() == 2 && Self::is_hex_data(raw_data) {
-            // This might be a checksum for an "l" response, treat as end of thread list
-            return Ok(GdbResponse::ThreadInfo {
-                threads: vec![],
-                more_data: false,
-            });
-        }
-
-        // If it doesn't match expected formats, return as raw data
-        Ok(GdbResponse::Raw {
-            data: raw_data.to_vec(),
-        })
+impl RawGdbResponse {
+    pub fn as_slice(&self) -> &[u8] {
+        self.0.as_slice()
     }
 
-    pub fn find_packet_data(data: &[u8]) -> Result<&[u8], ParseError> {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns the length of the entire packet, including the checksum
+    pub fn entire_packet_len(&self) -> usize {
+        self.0.len() + 3
+    }
+
+    pub fn find_packet_data(data: &[u8]) -> Result<Self, ParseError> {
+        if data.len() == 1 && (data[0] == b'+' || data[0] == b'-') {
+            return Ok(Self(vec![data[0]]));
+        }
+
+        if data.len() == 2 && data == b"OK" {
+            return Ok(Self(data.to_vec()));
+        }
+
         if data.len() < 4 || data[0] != b'$' {
-            return Err(ParseError::InvalidFormat);
+            return Err(ParseError::InvalidFormat("missing $ prefix"));
         }
 
         // Find the '#' separator - use position instead of rposition to get the first one
         let hash_pos = data
             .iter()
             .position(|&b| b == b'#')
-            .ok_or(ParseError::InvalidFormat)?;
+            .ok_or(ParseError::InvalidFormat("missing # separator"))?;
 
         // We need at least 2 more characters after # for checksum
         if hash_pos + 3 > data.len() {
-            // Try parsing without checksum verification
-            let content = &data[1..hash_pos];
-            return Ok(content);
+            return Err(ParseError::InvalidFormat("missing checksum"));
         }
 
-        let content = &data[1..hash_pos];
+        let content = &data[..hash_pos];
         // Extract exactly 2 characters for checksum, ignore anything after
         let checksum_str = str::from_utf8(&data[hash_pos + 1..hash_pos + 3])
-            .map_err(|_| ParseError::InvalidFormat)?;
+            .map_err(|_| ParseError::InvalidFormat("invalid checksum -- its not a string"))?;
 
         // Verify checksum
         let expected_checksum =
@@ -223,22 +174,31 @@ impl GdbResponse {
         if actual_checksum != expected_checksum {
             return Err(ParseError::InvalidChecksum);
         }
-        Ok(content)
+        Ok(RawGdbResponse(content.to_vec()))
     }
+}
+
+impl GdbResponse {
+    /// Parse raw response bytes into a structured GdbResponse
 
     /// Parse a GDB packet (starting with '$' and ending with '#xx')
-    fn parse_packet(data: &[u8], packet: &Packet) -> Result<Self, ParseError> {
-        let content = Self::find_packet_data(data)?;
+    pub fn parse_packet(content: RawGdbResponse, packet: &Packet) -> Result<Self, ParseError> {
         Self::parse_content(content, packet)
     }
 
     /// Parse the content portion of a GDB packet
-    fn parse_content(content: &[u8], packet: &Packet) -> Result<Self, ParseError> {
-        println!("parsing response to packet {packet:?}, data is {content:?}");
+    fn parse_content(raw_resp: RawGdbResponse, packet: &Packet) -> Result<Self, ParseError> {
+        let content = raw_resp.as_slice();
+
         log::debug!(
             "Parsing content ({} bytes): {:?}",
             content.len(),
             String::from_utf8_lossy(content)
+        );
+        log::debug!(
+            "AAAAAAAAAAPacket starts with {:?}, {}",
+            content[0],
+            content.starts_with(b"m")
         );
 
         if content.is_empty() {
@@ -267,11 +227,19 @@ impl GdbResponse {
 
             // qXfer responses (m<data> or l<data>)
             content if content.starts_with(b"m") => {
+                log::info!("DEBUG: Found 'm' prefix, content length: {}", content.len());
+                let data_part = &content[1..];
+                let looks_like_thread = Self::looks_like_thread_info(data_part);
+                log::info!("DEBUG: Data part: {:?}", String::from_utf8_lossy(data_part));
+                log::info!("DEBUG: Looks like thread info: {}", looks_like_thread);
+
                 // This could be either thread info or qXfer data
                 // Try to parse as thread info first, then fall back to qXfer
-                if Self::looks_like_thread_info(&content[1..]) {
+                if looks_like_thread {
+                    log::info!("DEBUG: Parsing as thread info");
                     Self::parse_thread_info(content, false)
                 } else {
+                    log::info!("DEBUG: Parsing as qXfer data");
                     // Parse as qXfer data
                     Ok(GdbResponse::QXferData {
                         data: content[1..].to_vec(),
@@ -417,7 +385,7 @@ impl GdbResponse {
     /// Parse stop reply packets (S or T packets)
     fn parse_stop_reply(content: &[u8]) -> Result<Self, ParseError> {
         if content.len() < 3 {
-            return Err(ParseError::InvalidFormat);
+            return Err(ParseError::InvalidFormat("stop reply packet too short"));
         }
 
         let signal_str = str::from_utf8(&content[1..3]).map_err(|_| ParseError::InvalidHex)?;
@@ -435,11 +403,11 @@ impl GdbResponse {
     /// Parse thread info responses (mXX,YY,ZZ...)
     fn parse_thread_info(content: &[u8], more_data: bool) -> Result<Self, ParseError> {
         if content.len() < 2 || content[0] != b'm' {
-            return Err(ParseError::InvalidFormat);
+            return Err(ParseError::InvalidFormat("thread info packet too short"));
         }
 
-        let thread_list_str =
-            str::from_utf8(&content[1..]).map_err(|_| ParseError::InvalidFormat)?;
+        let thread_list_str = str::from_utf8(&content[1..])
+            .map_err(|_| ParseError::InvalidFormat("invalid thread info -- its not a string"))?;
 
         let mut threads = Vec::new();
 
@@ -667,24 +635,30 @@ impl fmt::Display for GdbResponse {
 mod tests {
     use super::*;
 
+    pub fn test_parse(data: &[u8]) -> Result<GdbResponse, ParseError> {
+        let rv = RawGdbResponse::find_packet_data(data)?;
+        let r2 = GdbResponse::parse_packet(rv, &Packet::default())?;
+        Ok(r2)
+    }
+
+    pub fn parse_with_packet(data: &[u8], packet: &Packet) -> GdbResponse {
+        let rv = RawGdbResponse::find_packet_data(data).unwrap();
+        let r2 = GdbResponse::parse_packet(rv, packet).unwrap();
+        r2
+    }
+
     #[test]
     fn test_parse_ack() {
         crate::init_test_logger();
-        assert_eq!(
-            GdbResponse::parse(b"+", &Packet::default()).unwrap(),
-            GdbResponse::Ack
-        );
-        assert_eq!(
-            GdbResponse::parse(b"-", &Packet::default()).unwrap(),
-            GdbResponse::Nack
-        );
+        assert_eq!(test_parse(b"+").expect("Failed ack"), GdbResponse::Ack);
+        assert_eq!(test_parse(b"-").expect("Failed nack"), GdbResponse::Nack);
     }
 
     #[test]
     fn test_parse_empty() {
         crate::init_test_logger();
         assert_eq!(
-            GdbResponse::parse(b"$#00", &Packet::default()).unwrap(),
+            test_parse(b"$#00").expect("Failed empty"),
             GdbResponse::Empty
         );
     }
@@ -692,18 +666,13 @@ mod tests {
     #[test]
     fn test_parse_ok() {
         crate::init_test_logger();
-        assert_eq!(
-            GdbResponse::parse(b"$OK#9a", &Packet::default()).unwrap(),
-            GdbResponse::Ok
-        );
+        assert_eq!(test_parse(b"$OK#9a").expect("Failed ok"), GdbResponse::Ok);
     }
 
     #[test]
     fn test_parse_error() {
         crate::init_test_logger();
-        if let GdbResponse::Error { code } =
-            GdbResponse::parse(b"$E01#a6", &Packet::default()).unwrap()
-        {
+        if let GdbResponse::Error { code } = test_parse(b"$E01#a6").expect("Failed error") {
             assert_eq!(code, 0x01);
         } else {
             panic!("Expected Error response");
@@ -718,9 +687,7 @@ mod tests {
 
         // Test with proper register read context
         let packet = Packet::Command(GdbCommand::Base(Base::LowerG));
-        if let GdbResponse::RegisterData { data } =
-            GdbResponse::parse(b"$deadbeef#20", &packet).unwrap()
-        {
+        if let GdbResponse::RegisterData { data } = parse_with_packet(b"$deadbeef#20", &packet) {
             assert_eq!(data, vec![0xde, 0xad, 0xbe, 0xef]);
         } else {
             panic!("Expected RegisterData response");
@@ -730,7 +697,7 @@ mod tests {
     #[test]
     fn test_invalid_checksum() {
         crate::init_test_logger();
-        match GdbResponse::parse(b"$OK#00", &Packet::default()) {
+        match test_parse(b"$OK#00") {
             Err(ParseError::InvalidChecksum) => {}
             _ => panic!("Expected checksum error"),
         }

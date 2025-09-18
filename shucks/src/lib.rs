@@ -62,10 +62,10 @@ impl Packet {
 pub(crate) fn init_test_logger() {
     use std::sync::Once;
     static INIT: Once = Once::new();
-    
+
     INIT.call_once(|| {
         env_logger::Builder::from_default_env()
-            .filter_level(log::LevelFilter::Info)
+            .filter_level(log::LevelFilter::Debug)
             .is_test(true)
             .init();
     });
@@ -168,18 +168,18 @@ mod tests {
         let response1 = cl
             .send_command(&Packet::Command(GdbCommand::Resume(Resume::Step)))
             .expect("Failed to send first step command");
-        println!(
+        log::info!(
             "First step response: {:?}",
-            String::from_utf8_lossy(&response1)
+            String::from_utf8_lossy(&response1.as_slice())
         );
 
         // Step twice
         let response2 = cl
             .send_command(&Packet::Command(GdbCommand::Resume(Resume::Step)))
             .expect("Failed to send second step command");
-        println!(
+        log::info!(
             "Second step response: {:?}",
-            String::from_utf8_lossy(&response2)
+            String::from_utf8_lossy(&response2.as_slice())
         );
 
         sleep(Duration::from_millis(100));
