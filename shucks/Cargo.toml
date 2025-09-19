@@ -12,11 +12,13 @@ license.workspace = true
 [dependencies]
 gdbstub = { workspace = true }
 gdbstub_arch = { workspace = true }
-raki = {workspace = true }
+raki = { workspace = true }
 goblin = "0.10"
 
 
 log = { workspace = true }
+
+env_logger = { workspace = true }
 
 [dev-dependencies]
 dang = { path = "../dang" }

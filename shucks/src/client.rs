@@ -2,12 +2,11 @@ use std::{
     fs,
     io::{Read, Write},
     net::TcpStream,
-    ops::Add,
 };
 
 use crate::{
     commands::{Base, GdbCommand},
-    response::GdbResponse,
+    response::{GdbResponse, RawGdbResponse},
     Packet,
 };
 use goblin::elf::Elf;
@@ -17,6 +16,7 @@ pub struct Client {
     strm: TcpStream,
     packet_scratch: [u8; 4096],
     elf_info: Option<ElfInfo>,
+    response_buffer: Vec<u8>,
 }
 
 #[derive(Copy, Clone)]
@@ -129,23 +129,29 @@ impl Client {
             strm,
             packet_scratch: [0; 4096],
             elf_info: None,
+            response_buffer: Vec::new(),
         }
     }
 
-    pub fn send_command(&mut self, packet: &Packet) -> Result<Vec<u8>, std::io::Error> {
+    /// Drain any remaining data in the response buffer to ensure synchronization
+    fn drain_response_buffer(&mut self) {
+        if !self.response_buffer.is_empty() {
+            log::info!(
+                "Draining {} bytes from response buffer to maintain synchronization",
+                self.response_buffer.len()
+            );
+            self.response_buffer.clear();
+        }
+    }
+
+    pub fn send_command(&mut self, packet: &Packet) -> Result<RawGdbResponse, std::io::Error> {
         let pkt = packet.to_finished_packet(self.packet_scratch.as_mut_slice())?;
-        log::info!("Sending packet: {:?}", String::from_utf8_lossy(pkt.0));
+        log::info!("Sending packet: {:?}", packet);
         self.strm.write_all(pkt.0)?;
 
         // Read response with proper packet handling
         let response = self.read_gdb_packet()?;
-        log::info!("Read {} bytes", response.len());
-
-        // Validate response format and optionally checksum
-        if !self.is_valid_gdb_response(&response) {
-            log::warn!("Received potentially malformed GDB response: {:?}", 
-                       String::from_utf8_lossy(&response));
-        }
+        log::info!("Read {} bytes, content is {:?}", response.len(), &response);
 
         let _tstr = String::from_utf8_lossy(response.as_slice());
 
@@ -154,79 +160,75 @@ impl Client {
 
     /// Validate that a GDB response has proper format and optionally verify checksum
     fn is_valid_gdb_response(&self, data: &[u8]) -> bool {
-        Self::validate_gdb_response(data)
-    }
-
-    /// Standalone function to validate GDB response format and checksum
-    fn validate_gdb_response(data: &[u8]) -> bool {
-        if data.is_empty() {
-            return false;
-        }
-
-        // Simple acknowledgments are always valid
-        if data.len() == 1 && (data[0] == b'+' || data[0] == b'-') {
-            return true;
-        }
-
-        // Check for proper packet format
-        let start_idx = if data.len() > 1 && data[0] == b'+' && data[1] == b'$' {
-            1
-        } else if !data.is_empty() && data[0] == b'$' {
-            0
-        } else {
-            return false;
-        };
-
-        // Find hash position and validate complete packet
-        if let Some(hash_pos) = data[start_idx..].iter().position(|&b| b == b'#') {
-            let hash_pos = start_idx + hash_pos;
-            if data.len() >= hash_pos + 3 {
-                // Packet format is correct, validate checksum
-                return Self::validate_checksum(data, start_idx, hash_pos);
-            }
-        }
-
-        false
+        RawGdbResponse::find_packet_data(data).is_ok()
     }
 
     /// Read a complete GDB packet, handling partial reads and multiple packets
-    fn read_gdb_packet(&mut self) -> Result<Vec<u8>, std::io::Error> {
+    fn read_gdb_packet(&mut self) -> Result<RawGdbResponse, std::io::Error> {
         use std::io::ErrorKind;
         use std::time::{Duration, Instant};
 
-        let mut response = Vec::new();
-        let mut buffer = [0u8; 1024];
-        let timeout = Duration::from_millis(2000);
+        let timeout = Duration::from_millis(500);
         let start_time = Instant::now();
+
+        // First, check if we have a complete packet in the buffer from previous reads
+        if let Some((packet, remaining)) = Self::find_first_complete_packet(&self.response_buffer) {
+            self.response_buffer = remaining;
+            log::info!(
+                "Returned buffered packet, {} bytes remaining in buffer",
+                self.response_buffer.len()
+            );
+            return Ok(packet);
+        }
 
         // Set read timeout
         self.strm
             .set_read_timeout(Some(Duration::from_millis(500)))?;
 
+        let mut temp_buffer = [0u8; 1024];
+
         loop {
-            match self.strm.read(&mut buffer) {
+            match self.strm.read(&mut temp_buffer) {
                 Ok(0) => {
                     // EOF - connection closed
                     break;
                 }
                 Ok(n) => {
-                    response.extend_from_slice(&buffer[..n]);
+                    // Add new data to our response buffer
+                    self.response_buffer.extend_from_slice(&temp_buffer[..n]);
+                    log::debug!(
+                        "Read {} bytes, buffer now has {} bytes",
+                        n,
+                        self.response_buffer.len()
+                    );
 
-                    // Check if we have a complete response
-                    if self.is_complete_response(&response) {
-                        break;
+                    // Try to extract a complete packet from buffer - only check if we potentially have enough data
+                    if self.response_buffer.len() >= 4 {
+                        // Minimum packet size: $#xx
+                        if let Some((packet, remaining)) =
+                            Self::find_first_complete_packet(&self.response_buffer)
+                        {
+                            self.response_buffer = remaining;
+                            log::info!(
+                                "Extracted packet, {} bytes remaining in buffer",
+                                self.response_buffer.len()
+                            );
+                            self.strm.set_read_timeout(None)?;
+
+                            return Ok(packet);
+                        }
                     }
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
                     // Timeout occurred, check if we have any partial data
-                    if !response.is_empty() && start_time.elapsed() < timeout {
+                    if !self.response_buffer.is_empty() && start_time.elapsed() < timeout {
                         // We have partial data, keep trying for a bit longer
                         continue;
-                    } else if response.is_empty() && start_time.elapsed() < timeout {
+                    } else if self.response_buffer.is_empty() && start_time.elapsed() < timeout {
                         // No data yet but still within overall timeout
                         continue;
                     } else {
-                        // Overall timeout exceeded, return what we have
+                        // Overall timeout exceeded
                         break;
                     }
                 }
@@ -244,7 +246,32 @@ impl Client {
         // Reset timeout
         self.strm.set_read_timeout(None)?;
 
-        Ok(response)
+        // If we have any data in buffer but no complete packet, return it as is
+        // This handles cases where server sends malformed data
+        if !self.response_buffer.is_empty() {
+            if let Some((packet, remaining)) =
+                Self::find_first_complete_packet(&self.response_buffer)
+            {
+                self.response_buffer = remaining;
+                log::info!(
+                    "Extracted packet, {} bytes remaining in buffer",
+                    self.response_buffer.len()
+                );
+                self.strm.set_read_timeout(None)?;
+
+                return Ok(packet);
+            } else {
+                Err(std::io::Error::new(
+                    ErrorKind::TimedOut,
+                    "No packet found within timeout limit",
+                ))
+            }
+        } else {
+            Err(std::io::Error::new(
+                ErrorKind::TimedOut,
+                "No data received within timeout period",
+            ))
+        }
     }
 
     /// Validate GDB packet checksum
@@ -255,63 +282,41 @@ impl Client {
 
         // Extract packet content (between $ and #)
         let packet_content = &data[start_idx + 1..hash_pos];
-        
+
         // Calculate expected checksum (modulo 256 sum)
-        let expected_checksum = packet_content.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
-        
+        let expected_checksum = packet_content
+            .iter()
+            .fold(0u8, |acc, &b| acc.wrapping_add(b));
+
         // Extract received checksum (2 hex digits after #)
         let checksum_str = match std::str::from_utf8(&data[hash_pos + 1..hash_pos + 3]) {
             Ok(s) => s,
             Err(_) => return false,
         };
-        
+
         let received_checksum = match u8::from_str_radix(checksum_str, 16) {
             Ok(c) => c,
             Err(_) => return false,
         };
-        
+
         expected_checksum == received_checksum
     }
 
-    /// Check if we have a complete GDB response
-    fn is_complete_response(&self, data: &[u8]) -> bool {
-        Self::check_complete_response(data)
-    }
-
-    /// Standalone function to check if we have a complete GDB response
-    fn check_complete_response(data: &[u8]) -> bool {
-        if data.is_empty() {
-            return false;
+    /// Find packet boundaries in buffer and return the first complete packet
+    /// Returns (packet_data, remaining_buffer) or None if no complete packet found
+    fn find_first_complete_packet(buffer: &[u8]) -> Option<(RawGdbResponse, Vec<u8>)> {
+        let mdata = RawGdbResponse::find_packet_data(buffer).ok();
+        if let Some(data) = mdata {
+            let remaining = buffer[data.entire_packet_len()..].to_vec();
+            log::debug!(
+                "input buffer is {}, output is {}. remaining is {}",
+                String::from_utf8_lossy(buffer),
+                String::from_utf8_lossy(data.as_slice()),
+                String::from_utf8_lossy(remaining.as_slice())
+            );
+            return Some((data, remaining));
         }
-
-        // Simple acknowledgments
-        if data.len() == 1 && (data[0] == b'+' || data[0] == b'-') {
-            return true;
-        }
-
-        // Look for packet format: $...#xx or +$...#xx
-        let start_idx = if data.len() > 1 && data[0] == b'+' && data[1] == b'$' {
-            1
-        } else if !data.is_empty() && data[0] == b'$' {
-            0
-        } else {
-            // All GDB packets must follow the standard format with $ and # 
-            // No fallback for non-standard packets
-            return false;
-        };
-
-        // Look for the end of packet marker
-        if let Some(hash_pos) = data[start_idx..].iter().position(|&b| b == b'#') {
-            let hash_pos = start_idx + hash_pos;
-            // Check if we have the complete packet including checksum
-            if data.len() >= hash_pos + 3 {
-                // Optionally validate checksum (can be disabled for performance)
-                // For now, just check format - checksum validation can be added if needed
-                return true;
-            }
-        }
-
-        false
+        None
     }
 
     pub fn send_command_parsed(
@@ -319,89 +324,134 @@ impl Client {
         packet: Packet,
     ) -> Result<GdbResponse, Box<dyn std::error::Error>> {
         let raw_response = self.send_command(&packet)?;
-        let parsed_response = GdbResponse::parse(&raw_response, &packet)?;
-        log::info!("Parsed response: {parsed_response}");
+        let parsed_response = GdbResponse::parse_packet(raw_response, &packet)?;
+        log::info!("Parsed response: {parsed_response} from input {packet:?}");
+        Ok(parsed_response)
+    }
+
+    pub fn pop_response(&mut self) -> Result<GdbResponse, Box<dyn std::error::Error>> {
+        let raw_response = self.read_gdb_packet()?;
+        let parsed_response = GdbResponse::parse_packet(raw_response, &Packet::default())?;
         Ok(parsed_response)
     }
 
     pub fn initialize_gdb_session(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         log::info!("Starting GDB initialization sequence...");
 
-        // QStartNoAckMode - continue on failure
-        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QStartNoAckMode))) {
-            Ok(_) => log::info!("Sent QStartNoAckMode"),
-            Err(e) => {
-                log::info!("QStartNoAckMode failed: {e:?}, continuing...");
-            }
-        }
-
-        // QSupported - continue on failure
-        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QSupported))) {
-            Ok(_) => log::info!("Sent qSupported"),
-            Err(e) => {
-                log::info!("qSupported failed: {e:?}, continuing...");
-            }
-        }
-
-        log::info!("About to send qfThreadInfo...");
-        let thread_info_result =
-            self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QfThreadInfo)));
-        match thread_info_result {
-            Ok(response) => {
-                log::info!("qfThreadInfo response: {response:?}");
-            }
-            Err(e) => {
-                log::info!("qfThreadInfo failed: {e:?}");
-                // Try to continue without thread info for now
-                log::info!("Continuing without thread info...");
-            }
-        }
-
-        log::info!("About to send qsThreadInfo...");
-        let thread_info_cont_result =
-            self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QsThreadInfo)));
-        match thread_info_cont_result {
-            Ok(response) => {
-                log::info!("qsThreadInfo response: {response:?}");
-            }
-            Err(e) => {
-                log::info!("qsThreadInfo failed: {e:?}");
-                // Try to continue without thread info for now
-                log::info!("Continuing without thread info...");
-            }
-        }
-
-        // Question mark - this is more critical, but still try to continue
-        let halt_reason_result =
-            self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QuestionMark)));
-        match halt_reason_result {
-            Ok(halt_reason) => {
-                log::info!("Sent ? (halt reason query): {halt_reason}");
-            }
-            Err(e) => {
-                log::info!("Halt reason query failed: {e:?}, continuing anyway...");
-            }
-        }
-
-        // Read all registers to get PC - continue on failure
-        let registers_result =
-            self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::LowerG)));
-        match registers_result {
-            Ok(registers) => {
-                log::info!("Read registers: {registers}");
-
-                // Display PC and instructions using new get_current_pc method
-                if let Err(e) = self.display_pc_and_instructions() {
-                    log::info!("Failed to display PC and instructions: {e:?}");
+        // QStartNoAckMode must return OK per RSP
+        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QStartNoAckMode)))? {
+            GdbResponse::Ack => {
+                log::info!("QStartNoAckMode acknowledged with an ack");
+                let resp = self.pop_response()?;
+                if resp != GdbResponse::Ok {
+                    return Err(format!("Expected Ok for QStartNoAckMode, got: {resp}").into());
                 }
             }
-            Err(e) => {
-                log::info!("Reading registers failed: {e:?}, continuing...");
+            GdbResponse::Ok => {
+                log::info!("QStartNoAckMode acknowledged with an ok");
+            }
+            other => {
+                return Err(format!("Expected Ack for QStartNoAckMode, got: {other}").into());
+            }
+        }
+
+        // qSupported should return a feature list; require PacketSize (commonly provided)
+        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QSupported)))? {
+            GdbResponse::Supported { features } => {
+                let has_packet_size = features.iter().any(|f| f.starts_with("PacketSize="));
+                if !has_packet_size {
+                    return Err(format!(
+                        "qSupported missing PacketSize in features: {:?}",
+                        features
+                    )
+                    .into());
+                }
+                log::info!("qSupported features: {:?}", features);
+            }
+            other => {
+                return Err(format!("Expected qSupported feature list, got: {other}").into());
+            }
+        }
+
+        // qfThreadInfo must return thread list (may be empty) or 'm...' chunk
+        log::info!("About to send qfThreadInfo...");
+        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QfThreadInfo)))? {
+            GdbResponse::ThreadInfo { threads, .. } => {
+                log::info!("qfThreadInfo threads: {:?}", threads);
+            }
+            other => {
+                return Err(format!("Expected thread info for qfThreadInfo, got: {other}").into());
+            }
+        }
+
+        // qsThreadInfo should continue list or return end
+        log::info!("About to send qsThreadInfo...");
+        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QsThreadInfo)))? {
+            GdbResponse::ThreadInfo { threads, .. } => {
+                log::info!("qsThreadInfo threads: {:?}", threads);
+            }
+            other => {
+                return Err(format!("Expected thread info for qsThreadInfo, got: {other}").into());
+            }
+        }
+
+        // '?' must return a stop reply (Sxx or Txx)
+        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QuestionMark)))? {
+            GdbResponse::StopReply { signal, .. } => {
+                log::info!("Got stop reply with signal 0x{signal:02x}");
+            }
+            other => {
+                return Err(format!("Expected stop reply for '?', got: {other}").into());
+            }
+        }
+
+        // 'g' must return register data; for RV32 expect >= 132 bytes (32 GPRs + PC), 4-byte aligned
+        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::LowerG)))? {
+            GdbResponse::RegisterData { data } => {
+                if data.len() < 132 || (data.len() % 4) != 0 {
+                    return Err(format!(
+                        "Unexpected register data length (got {}, expected >= 132 and multiple of 4)",
+                        data.len()
+                    ).into());
+                }
+                log::info!("Register read length OK: {} bytes", data.len());
+            }
+            other => {
+                return Err(format!("Expected RegisterData for 'g' (LowerG), got: {other}").into());
             }
         }
 
         log::info!("GDB initialization sequence complete!");
         Ok(())
+    }
+
+    pub fn get_time_idx(&mut self) -> Result<u64, Box<dyn std::error::Error>> {
+        let rv = self
+            .send_monitor_command("time_idx")
+            .inspect(|val| println!("{val}"))
+            .map(|output| output.trim().parse::<u64>().map_err(|e| e.into()))?;
+
+        rv
+    }
+
+    /// Send a monitor command to the GDB server
+    pub fn send_monitor_command(
+        &mut self,
+        cmd: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        // Drain any lingering responses before sending critical commands
+        self.drain_response_buffer();
+
+        let monitor_packet = Packet::Command(GdbCommand::Base(Base::QRcmd {
+            command: cmd.to_string(),
+        }));
+
+        let response = self.send_command_parsed(monitor_packet)?;
+
+        match response {
+            crate::response::GdbResponse::MonitorOutput { output } => Ok(output),
+            other => Err(format!("Expected monitor output, got: {other}").into()),
+        }
     }
 
     /// Display the program counter and current/next instructions
@@ -532,13 +582,6 @@ impl Client {
             symbols,
             elf_data,
         });
-
-        log::info!(
-            "Parsed {} ELF file: {} symbols, entry point: 0x{:x}",
-            if is_32bit { "32-bit" } else { "64-bit" },
-            self.elf_info.as_ref().unwrap().symbols.len(),
-            self.elf_info.as_ref().unwrap().entry_point
-        );
 
         Ok(())
     }
@@ -691,7 +734,7 @@ impl Client {
         let instruction_bytes = self.get_instruction_bytes_from_elf(pc)?;
 
         // Determine ISA based on ELF info
-        let isa = if let Some(elf_info) = &self.elf_info {
+        let _isa = if let Some(elf_info) = &self.elf_info {
             if elf_info.is_32bit {
                 Isa::Rv32
             } else {
@@ -783,13 +826,14 @@ mod tests {
 
     #[test]
     fn test_get_instructions() {
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
         let handle = start_dang_instance(listener);
 
         // Give the server time to start
-        sleep(Duration::from_millis(300));
+        sleep(Duration::from_millis(1000));
 
         // Connect with the client to actual dang instance
         let mut client = Client::new_with_port(port);
@@ -813,13 +857,14 @@ mod tests {
 
     #[test]
     fn test_get_current_pc_method() {
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
         let handle = start_dang_instance(listener);
 
         // Give the server time to start
-        sleep(Duration::from_millis(300));
+        sleep(Duration::from_millis(1000));
 
         // Connect with the client to actual dang instance
         let mut client = Client::new_with_port(port);
@@ -836,8 +881,8 @@ mod tests {
                         // PC should be a reasonable 32-bit value
                         assert!(pc.nz(), "PC should be greater than 0");
                     }
-                    Err(e) => {
-                        panic!("Fucked up");
+                    Err(_e) => {
+                        panic!("AHHHH FUCK WE CANT GET PC NOOOOOOO AAAHHH FILE AN ISSUE ! I WILL KNOW NO PEACE! FILE AN ISSUE ON GITHUB AND PLEASE BE NICE TO ME!");
                     }
                 }
             }
@@ -857,6 +902,7 @@ mod tests {
 
     #[test]
     fn test_register_read_response_parsing_issue() {
+        crate::init_test_logger();
         // Test that reproduces the jpdb "Unexpected response format for register read" issue
         use crate::response::GdbResponse;
 
@@ -883,7 +929,10 @@ mod tests {
             let checksum = calculate_gdb_checksum(&hex_string);
             let packet = format!("${hex_string}#{checksum}");
             let packet_type = Packet::Command(GdbCommand::Base(Base::LowerG));
-            let response = GdbResponse::parse(packet.as_bytes(), &packet_type);
+            let response = GdbResponse::parse_packet(
+                RawGdbResponse::find_packet_data(packet.as_bytes()).unwrap(),
+                &packet_type,
+            );
 
             log::info!(
                 "Test case {}: data length = {}, result = {:?}",
@@ -916,50 +965,34 @@ mod tests {
     }
 
     #[test]
-    fn test_gdb_packet_validation_bug_fix() {
-        // Test checksum validation using standalone functions (no network needed)
-        
-        // Test valid checksum
-        let valid_packet = b"$OK#9a";
-        assert!(Client::validate_gdb_response(valid_packet), "Valid packet should pass checksum");
+    fn test_time_idx_command() {
+        crate::init_test_logger();
+        let (listener, port) = create_test_listener();
 
-        // Test invalid checksum
-        let invalid_packet = b"$OK#00";
-        assert!(!Client::validate_gdb_response(invalid_packet), "Invalid checksum should fail");
+        // Start dang GDB stub in a separate thread
+        let handle = start_dang_instance(listener);
 
-        // Test acknowledgments (no checksum required)
-        assert!(Client::validate_gdb_response(b"+"), "ACK should be valid");
-        assert!(Client::validate_gdb_response(b"-"), "NACK should be valid");
+        // Give the server time to start
+        sleep(Duration::from_millis(1000));
 
-        // Test malformed packets - this is the main bug fix
-        assert!(!Client::validate_gdb_response(b"OK"), "Non-standard packet should be rejected");
-        assert!(!Client::validate_gdb_response(b"$OK"), "Packet without checksum should be rejected");
-        assert!(!Client::validate_gdb_response(b"$OK#9"), "Packet with incomplete checksum should be rejected");
+        // Connect with the client to actual dang instance
+        let mut client = Client::new_with_port(port);
+        sleep(Duration::from_millis(200)); // Increased delay for stability
 
-        // Test empty packet
-        let empty_packet = b"$#00";
-        assert!(Client::validate_gdb_response(empty_packet), "Empty packet with valid checksum should pass");
+        client
+            .initialize_gdb_session()
+            .expect("failed to init gdb session for time_idx test");
+        sleep(Duration::from_millis(100)); // Increased delay for stability
 
-        // Test that non-standard packets are now rejected (fixing the original bug)
-        assert!(!Client::check_complete_response(b"OK"), "Non-standard packet should be incomplete");
-        assert!(!Client::check_complete_response(b"some random data"), "Random data should be incomplete");
-        
-        // Test proper GDB packets are recognized as complete
-        assert!(Client::check_complete_response(b"$OK#9a"), "Standard packet should be complete");
-        assert!(Client::check_complete_response(b"$#00"), "Empty packet should be complete");
-        assert!(Client::check_complete_response(b"+$OK#9a"), "Ack + packet should be complete");
-        
-        // Test acknowledgments
-        assert!(Client::check_complete_response(b"+"), "ACK should be complete");
-        assert!(Client::check_complete_response(b"-"), "NACK should be complete");
-        
-        // Test incomplete packets
-        assert!(!Client::check_complete_response(b"$OK#9"), "Incomplete checksum should be incomplete");
-        assert!(!Client::check_complete_response(b"$OK"), "Missing checksum should be incomplete");
+        // Send the time_idx monitor command
+        let time_idx_output = client.get_time_idx();
+        if let Err(e) = time_idx_output {
+            panic!("err is {e:?} when getting time idx");
+        }
 
-        // Test basic checksum calculation
-        let content = "OK";
-        let checksum = content.bytes().fold(0u8, |acc, b| acc.wrapping_add(b));
-        assert_eq!(checksum, 0x9a); // 'O' (0x4f) + 'K' (0x4b) = 0x9a
+        assert!(time_idx_output.is_ok());
+
+        // Kill the handle by not waiting for it to complete
+        drop(handle);
     }
 }

@@ -10,7 +10,7 @@ use commands::{Base, GdbCommand};
 use packet::FinishedPacket;
 
 /// Top-Level GDB packet
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub enum Packet {
     #[default]
     Ack,
@@ -37,6 +37,14 @@ impl Packet {
         }
     }
 
+    pub fn is_monitor_command(&self) -> bool {
+        match self {
+            Self::Ack => false,
+            Self::Command(GdbCommand::Base(Base::QRcmd { .. })) => true,
+            Self::Command(_) => false,
+        }
+    }
+
     pub fn to_finished_packet<'a>(
         &self,
         slice: &'a mut [u8],
@@ -47,6 +55,20 @@ impl Packet {
         };
         rv
     }
+}
+
+// Shared logger initialization for all tests
+#[cfg(test)]
+pub(crate) fn init_test_logger() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+
+    INIT.call_once(|| {
+        env_logger::Builder::from_default_env()
+            .filter_level(log::LevelFilter::Debug)
+            .is_test(true)
+            .init();
+    });
 }
 
 #[cfg(test)]
@@ -107,6 +129,7 @@ mod tests {
 
     #[test]
     fn sanity() {
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
@@ -126,13 +149,14 @@ mod tests {
 
     #[test]
     fn step_twice() {
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
         let handle = start_dang_instance(listener);
 
         // Give the server time to start
-        sleep(Duration::from_millis(300));
+        sleep(Duration::from_millis(1000));
 
         // Connect with the client
         let mut cl = Client::new_with_port(port);
@@ -144,18 +168,18 @@ mod tests {
         let response1 = cl
             .send_command(&Packet::Command(GdbCommand::Resume(Resume::Step)))
             .expect("Failed to send first step command");
-        println!(
+        log::info!(
             "First step response: {:?}",
-            String::from_utf8_lossy(&response1)
+            String::from_utf8_lossy(&response1.as_slice())
         );
 
         // Step twice
         let response2 = cl
             .send_command(&Packet::Command(GdbCommand::Resume(Resume::Step)))
             .expect("Failed to send second step command");
-        println!(
+        log::info!(
             "Second step response: {:?}",
-            String::from_utf8_lossy(&response2)
+            String::from_utf8_lossy(&response2.as_slice())
         );
 
         sleep(Duration::from_millis(100));
@@ -166,26 +190,21 @@ mod tests {
 
     #[test]
     fn gdb_initialization() {
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
         let handle = start_dang_instance(listener);
 
-        check_server_init_with_backoff(port);
+        // Give the server time to start
+        sleep(Duration::from_millis(1000));
 
-        // Additional small delay to ensure server is fully ready
+        // Connect with the client
+        let mut cl = Client::new_with_port(port);
         sleep(Duration::from_millis(100));
 
-        // Connect with the client and run GDB initialization sequence with retries
-        let result = retry_with_backoff(
-            || {
-                let mut cl = Client::new_with_port(port);
-                cl.initialize_gdb_session()
-            },
-            3,
-        );
-
-        result.expect("Failed to initialize GDB session after retries");
+        cl.initialize_gdb_session()
+            .expect("Failed to initialize GDB session");
 
         sleep(Duration::from_millis(100));
 
@@ -195,13 +214,14 @@ mod tests {
 
     #[test]
     fn test_parsed_responses() {
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
         let handle = start_dang_instance(listener);
 
         // Give the server time to start
-        sleep(Duration::from_millis(300));
+        sleep(Duration::from_millis(1000));
 
         // Connect with the client
         let mut cl = Client::new_with_port(port);
@@ -226,13 +246,14 @@ mod tests {
 
     #[test]
     fn test_get_executable_path() {
+        crate::init_test_logger();
         let (listener, port) = create_test_listener();
 
         // Start dang GDB stub in a separate thread
         let handle = start_dang_instance(listener);
 
         // Give the server time to start
-        sleep(Duration::from_millis(300));
+        sleep(Duration::from_millis(1000));
 
         // Connect with the client
         let mut cl = Client::new_with_port(port);

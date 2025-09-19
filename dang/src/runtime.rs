@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::waveloader::{self, WellenSignalExt};
@@ -85,7 +85,7 @@ impl Waver {
             .filter(|h| h.is_alloc() && h.sh_type != goblin::elf::section_header::SHT_NOBITS);
 
         for h in sections {
-            eprintln!(
+            log::debug!(
                 "loading section {:?} into memory from [{:#010x?}..{:#010x?}]",
                 elf_header
                     .shdr_strtab
@@ -161,7 +161,7 @@ impl Waver {
     pub fn step(&mut self) -> Option<Event> {
         let next_pc = self.next_pc();
         if let Some(pc) = next_pc {
-            log::info!("pc is {:?}", pc);
+            log::info!("pc is {pc:?}");
             log::info!("mem is {:?}", self.mem.r32(pc));
 
             if self.breakpoints.contains(&pc) {
@@ -187,7 +187,7 @@ impl Waver {
                 let mut cycles = 0;
                 loop {
                     if cycles % 1024 == 0 {
-                        log::info!("executed {} cycles", cycles);
+                        log::info!("executed {cycles} cycles");
                         // poll for incoming data
                         if poll_incoming_data() {
                             break RunEvent::IncomingData;
@@ -223,7 +223,7 @@ impl Waver {
                 }
             }
         };
-        log::info!("run_event is {:?}", run_event);
+        log::info!("run_event is {run_event:?}");
         run_event
     }
 }

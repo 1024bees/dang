@@ -1,13 +1,11 @@
 use crate::convert::Mappable;
 use crate::runtime::{RequiredWaves, WaveCursor};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use pyo3::prelude::*;
 use pyo3::PyResult;
 use pywellen::{self, pywellen as doggy};
-use wellen::{
-    self, GetItem, Hierarchy, LoadOptions, Signal, SignalRef, SignalValue, TimeTableIdx, VarRef,
-};
+use wellen::{self, LoadOptions, Signal, SignalValue, TimeTableIdx};
 
 use std::{cmp::Ordering, collections::HashMap, fs, path::Path};
 use std::{cmp::Reverse, sync::Once};
@@ -21,11 +19,6 @@ const LOAD_OPTS: LoadOptions = LoadOptions {
     remove_scopes_with_empty_name: false,
 };
 
-
-pub trait WellenExt {
-    fn get_var<S: AsRef<str>>(&self, varname: S) -> Option<VarRef>;
-}
-
 pub trait WellenSignalExt {
     /// Trivially maps idx to the first value available
     fn try_get_val(&self, idx: TimeTableIdx) -> Option<SignalValue<'_>>;
@@ -35,16 +28,6 @@ pub trait WellenSignalExt {
 
     fn get_val(&self, idx: TimeTableIdx) -> SignalValue<'_> {
         self.try_get_val(idx).unwrap()
-    }
-}
-
-impl WellenExt for Hierarchy {
-    fn get_var<S: AsRef<str>>(&self, varname: S) -> Option<VarRef> {
-        let varname = varname.as_ref();
-        let vars: Vec<&str> = varname.split('.').collect();
-        let vals = &vars[0..vars.len() - 1];
-        let last = vars.last().unwrap();
-        self.lookup_var(vals, last)
     }
 }
 
@@ -81,12 +64,6 @@ impl WellenSignalExt for Signal {
 
         val
     }
-}
-
-fn path_to_signal_ref(hier: &Hierarchy, path: impl AsRef<str>) -> anyhow::Result<SignalRef> {
-    hier.get_var(path)
-        .ok_or(anyhow!("No signal  found"))
-        .map(|val| hier.get(val).signal_ref())
 }
 
 #[derive(Debug, Eq)]
@@ -155,7 +132,7 @@ impl Loaded {
 
         let body = wellen::viewers::read_body(header.body, &hierarchy, None)?;
 
-        let script_name = "get_signals";
+        let script_name = "get_gdb_signals";
         let mut py_signals =
             execute_get_signals(signal_py_file.as_path(), script_name, file_name.as_path())?;
 
@@ -178,7 +155,7 @@ impl Loaded {
         }
         let all_changes = merge_changes(all_changes_together);
         let first_pc_idx = pc.find_idx(first_pc).unwrap();
-        log::info!("found first PC index: {}", first_pc_idx);
+        log::info!("found first PC index: {first_pc_idx}");
         let cursor = WaveCursor {
             time_idx: first_pc_idx,
             all_changes,
@@ -255,7 +232,7 @@ mod tests {
         // Read the script content
 
         // Define the function name and wave path
-        let fn_name = "get_signals";
+        let fn_name = "get_gdb_signals";
         let wave_path = PathBuf::from(cargo_manifest_dir).join("../test_data/ibex/sim.fst");
 
         // Call the function
@@ -270,7 +247,7 @@ mod tests {
                 // Add more assertions as needed
                 //
             }
-            Err(e) => panic!("Function execution failed: {:?}", e),
+            Err(e) => panic!("Function execution failed: {e:?}"),
         }
     }
 }
