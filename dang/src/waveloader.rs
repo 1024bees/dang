@@ -80,7 +80,7 @@ impl PartialEq for Item<'_> {
 
 impl PartialOrd for Item<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.get_item().partial_cmp(&other.get_item())
+        Some(self.get_item().cmp(&other.get_item()))
     }
 }
 

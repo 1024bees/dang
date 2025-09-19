@@ -138,7 +138,7 @@ impl RawGdbResponse {
     pub fn entire_packet_len(&self) -> usize {
         // ack and nacks are single bytes
         if self.data.len() == 1 && (self.data[0] == b'+' || self.data[0] == b'-') {
-            return 1;
+            1
         } else {
             // add 4 to account for the $ prefix, # separator, and checksum
             self.data.len() + self.omitted
@@ -226,7 +226,7 @@ impl GdbResponse {
         );
         log::debug!(
             "AAAAAAAAAAPacket starts with {:?}, {}",
-            content.get(0),
+            content.first(),
             content.starts_with(b"m")
         );
 
@@ -264,7 +264,7 @@ impl GdbResponse {
                 let data_part = &content[1..];
                 let looks_like_thread = Self::looks_like_thread_info(data_part);
                 log::info!("DEBUG: Data part: {:?}", String::from_utf8_lossy(data_part));
-                log::info!("DEBUG: Looks like thread info: {}", looks_like_thread);
+                log::info!("DEBUG: Looks like thread info: {looks_like_thread}");
 
                 // This could be either thread info or qXfer data
                 // Try to parse as thread info first, then fall back to qXfer
@@ -676,8 +676,8 @@ mod tests {
 
     pub fn parse_with_packet(data: &[u8], packet: &Packet) -> GdbResponse {
         let rv = RawGdbResponse::find_packet_data(data).unwrap();
-        let r2 = GdbResponse::parse_packet(rv, packet).unwrap();
-        r2
+        
+        GdbResponse::parse_packet(rv, packet).unwrap()
     }
 
     #[test]

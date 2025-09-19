@@ -105,8 +105,8 @@ impl Base {
             }
             Self::QRcmd { command } => {
                 // Hex encode the command string
-                let hex_command: String = command.bytes().map(|b| format!("{:02x}", b)).collect();
-                cursor.write_content(format!(",{}", hex_command).as_bytes())?;
+                let hex_command: String = command.bytes().map(|b| format!("{b:02x}")).collect();
+                cursor.write_content(format!(",{hex_command}").as_bytes())?;
             }
             _ => {
                 // pass

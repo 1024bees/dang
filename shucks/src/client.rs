@@ -146,7 +146,7 @@ impl Client {
 
     pub fn send_command(&mut self, packet: &Packet) -> Result<RawGdbResponse, std::io::Error> {
         let pkt = packet.to_finished_packet(self.packet_scratch.as_mut_slice())?;
-        log::info!("Sending packet: {:?}", packet);
+        log::info!("Sending packet: {packet:?}");
         self.strm.write_all(pkt.0)?;
 
         // Read response with proper packet handling
@@ -156,11 +156,6 @@ impl Client {
         let _tstr = String::from_utf8_lossy(response.as_slice());
 
         Ok(response)
-    }
-
-    /// Validate that a GDB response has proper format and optionally verify checksum
-    fn is_valid_gdb_response(&self, data: &[u8]) -> bool {
-        RawGdbResponse::find_packet_data(data).is_ok()
     }
 
     /// Read a complete GDB packet, handling partial reads and multiple packets
@@ -259,7 +254,7 @@ impl Client {
                 );
                 self.strm.set_read_timeout(None)?;
 
-                return Ok(packet);
+                Ok(packet)
             } else {
                 Err(std::io::Error::new(
                     ErrorKind::TimedOut,
@@ -272,34 +267,6 @@ impl Client {
                 "No data received within timeout period",
             ))
         }
-    }
-
-    /// Validate GDB packet checksum
-    fn validate_checksum(data: &[u8], start_idx: usize, hash_pos: usize) -> bool {
-        if data.len() < hash_pos + 3 {
-            return false;
-        }
-
-        // Extract packet content (between $ and #)
-        let packet_content = &data[start_idx + 1..hash_pos];
-
-        // Calculate expected checksum (modulo 256 sum)
-        let expected_checksum = packet_content
-            .iter()
-            .fold(0u8, |acc, &b| acc.wrapping_add(b));
-
-        // Extract received checksum (2 hex digits after #)
-        let checksum_str = match std::str::from_utf8(&data[hash_pos + 1..hash_pos + 3]) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-
-        let received_checksum = match u8::from_str_radix(checksum_str, 16) {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-
-        expected_checksum == received_checksum
     }
 
     /// Find packet boundaries in buffer and return the first complete packet
@@ -360,13 +327,11 @@ impl Client {
             GdbResponse::Supported { features } => {
                 let has_packet_size = features.iter().any(|f| f.starts_with("PacketSize="));
                 if !has_packet_size {
-                    return Err(format!(
-                        "qSupported missing PacketSize in features: {:?}",
-                        features
-                    )
-                    .into());
+                    return Err(
+                        format!("qSupported missing PacketSize in features: {features:?}").into(),
+                    );
                 }
-                log::info!("qSupported features: {:?}", features);
+                log::info!("qSupported features: {features:?}");
             }
             other => {
                 return Err(format!("Expected qSupported feature list, got: {other}").into());
@@ -377,7 +342,7 @@ impl Client {
         log::info!("About to send qfThreadInfo...");
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QfThreadInfo)))? {
             GdbResponse::ThreadInfo { threads, .. } => {
-                log::info!("qfThreadInfo threads: {:?}", threads);
+                log::info!("qfThreadInfo threads: {threads:?}");
             }
             other => {
                 return Err(format!("Expected thread info for qfThreadInfo, got: {other}").into());
@@ -388,7 +353,7 @@ impl Client {
         log::info!("About to send qsThreadInfo...");
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QsThreadInfo)))? {
             GdbResponse::ThreadInfo { threads, .. } => {
-                log::info!("qsThreadInfo threads: {:?}", threads);
+                log::info!("qsThreadInfo threads: {threads:?}");
             }
             other => {
                 return Err(format!("Expected thread info for qsThreadInfo, got: {other}").into());
@@ -452,54 +417,6 @@ impl Client {
             crate::response::GdbResponse::MonitorOutput { output } => Ok(output),
             other => Err(format!("Expected monitor output, got: {other}").into()),
         }
-    }
-
-    /// Display the program counter and current/next instructions
-    fn display_pc_and_instructions(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Get current PC using the dedicated method
-        let pc = self.get_current_pc()?;
-
-        log::info!("Program Counter (PC): 0x{pc}");
-
-        // Read current instruction (4 bytes for RISC-V)
-        let current_inst =
-            self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::LowerM {
-                addr: pc.as_u32(),
-                length: 4,
-            })))?;
-
-        // Read next 3 instructions (12 bytes total)
-        let next_insts =
-            self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::LowerM {
-                addr: pc.as_u32() + 4,
-                length: 12,
-            })))?;
-
-        // Display current instruction
-        if let crate::response::GdbResponse::MemoryData { data } = current_inst {
-            if data.len() >= 4 {
-                let inst = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                log::info!("Current instruction:  0x{inst:08x}");
-            }
-        }
-
-        // Display next 3 instructions
-        if let crate::response::GdbResponse::MemoryData { data } = next_insts {
-            for i in 0..3 {
-                let offset = i * 4;
-                if data.len() >= offset + 4 {
-                    let inst = u32::from_le_bytes([
-                        data[offset],
-                        data[offset + 1],
-                        data[offset + 2],
-                        data[offset + 3],
-                    ]);
-                    log::info!("Next instruction #{}: 0x{:08x}", i + 1, inst);
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Get the executable file path from the remote target

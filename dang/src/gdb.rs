@@ -75,8 +75,7 @@ impl MonitorCmd for Waver {
         mut out: ConsoleOutput<'_>,
     ) -> Result<(), Self::Error> {
         log::info!(
-            "DANG SERVER: Received monitor command (QRcmd) with raw bytes: {:?}",
-            cmd
+            "DANG SERVER: Received monitor command (QRcmd) with raw bytes: {cmd:?}"
         );
         let cmd = match core::str::from_utf8(cmd) {
             Ok(cmd) => cmd,
@@ -85,7 +84,7 @@ impl MonitorCmd for Waver {
                 return Ok(());
             }
         };
-        log::info!("DANG SERVER: Processing monitor command: '{}'", cmd);
+        log::info!("DANG SERVER: Processing monitor command: '{cmd}'");
 
         match cmd {
             "" => outputln!(out,
@@ -93,7 +92,7 @@ impl MonitorCmd for Waver {
             ),
             "time_idx" => {
                 let time_idx = self.cursor.time_idx;
-                log::info!("DANG SERVER: time_idx command returning: {}", time_idx);
+                log::info!("DANG SERVER: time_idx command returning: {time_idx}");
                 outputln!(out, "{}", time_idx)
             },
             _ => outputln!(out, "I don't know how to handle '{}'", cmd),

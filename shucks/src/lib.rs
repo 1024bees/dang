@@ -170,7 +170,7 @@ mod tests {
             .expect("Failed to send first step command");
         log::info!(
             "First step response: {:?}",
-            String::from_utf8_lossy(&response1.as_slice())
+            String::from_utf8_lossy(response1.as_slice())
         );
 
         // Step twice
@@ -179,7 +179,7 @@ mod tests {
             .expect("Failed to send second step command");
         log::info!(
             "Second step response: {:?}",
-            String::from_utf8_lossy(&response2.as_slice())
+            String::from_utf8_lossy(response2.as_slice())
         );
 
         sleep(Duration::from_millis(100));
