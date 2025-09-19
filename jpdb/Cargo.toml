@@ -1,0 +1,17 @@
+[package]
+name = "jpdb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "TUI debugger frontend"
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+ratatui = "0.28"
+crossterm = "0.28"
+shucks = { path = "../shucks" }
+dang = { path = "../dang" }
+log = { workspace = true }
+env_logger = { workspace = true }
