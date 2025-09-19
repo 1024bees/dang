@@ -183,7 +183,7 @@ impl Client {
 
         // Set read timeout
         self.strm
-            .set_read_timeout(Some(Duration::from_millis(200)))?;
+            .set_read_timeout(Some(Duration::from_millis(500)))?;
 
         let mut temp_buffer = [0u8; 1024];
 
@@ -329,82 +329,95 @@ impl Client {
         Ok(parsed_response)
     }
 
+    pub fn pop_response(&mut self) -> Result<GdbResponse, Box<dyn std::error::Error>> {
+        let raw_response = self.read_gdb_packet()?;
+        let parsed_response = GdbResponse::parse_packet(raw_response, &Packet::default())?;
+        Ok(parsed_response)
+    }
+
     pub fn initialize_gdb_session(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         log::info!("Starting GDB initialization sequence...");
 
-        // QStartNoAckMode - continue on failure
-        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QStartNoAckMode))) {
-            Ok(_) => log::info!("Sent QStartNoAckMode"),
-            Err(e) => {
-                log::info!("QStartNoAckMode failed: {e:?}");
-                return Err(e);
-            }
-        }
-
-        // QSupported - continue on failure
-        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QSupported))) {
-            Ok(_) => log::info!("Sent qSupported"),
-            Err(e) => {
-                log::info!("qSupported failed: {e:?}");
-                return Err(e);
-            }
-        }
-
-        log::info!("About to send qfThreadInfo...");
-        let thread_info_result =
-            self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QfThreadInfo)));
-        match thread_info_result {
-            Ok(response) => {
-                log::info!("qfThreadInfo response: {response:?}");
-            }
-            Err(e) => {
-                log::info!("qfThreadInfo failed: {e:?}");
-
-                return Err(e);
-            }
-        }
-
-        log::info!("About to send qsThreadInfo...");
-        let thread_info_cont_result =
-            self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QsThreadInfo)));
-        match thread_info_cont_result {
-            Ok(response) => {
-                log::info!("qsThreadInfo response: {response:?}");
-            }
-            Err(e) => {
-                log::info!("qsThreadInfo failed: {e:?}");
-                return Err(e);
-            }
-        }
-
-        // Question mark - this is more critical, but still try to continue
-        let halt_reason_result =
-            self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QuestionMark)));
-        match halt_reason_result {
-            Ok(halt_reason) => {
-                log::info!("Sent ? (halt reason query): {halt_reason}");
-            }
-            Err(e) => {
-                log::info!("Halt reason query failed: {e:?}");
-                return Err(e);
-            }
-        }
-
-        // Read all registers to get PC - continue on failure
-        let registers_result =
-            self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::LowerG)));
-        match registers_result {
-            Ok(registers) => {
-                log::info!("Read registers: {registers}");
-
-                // Display PC and instructions using new get_current_pc method
-                if let Err(e) = self.display_pc_and_instructions() {
-                    log::info!("Failed to display PC and instructions: {e:?}");
+        // QStartNoAckMode must return OK per RSP
+        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QStartNoAckMode)))? {
+            GdbResponse::Ack => {
+                log::info!("QStartNoAckMode acknowledged with an ack");
+                let resp = self.pop_response()?;
+                if resp != GdbResponse::Ok {
+                    return Err(format!("Expected Ok for QStartNoAckMode, got: {resp}").into());
                 }
             }
-            Err(e) => {
-                log::info!("Reading registers failed: {e:?}");
-                return Err(e);
+            GdbResponse::Ok => {
+                log::info!("QStartNoAckMode acknowledged with an ok");
+            }
+            other => {
+                return Err(format!("Expected Ack for QStartNoAckMode, got: {other}").into());
+            }
+        }
+
+        // qSupported should return a feature list; require PacketSize (commonly provided)
+        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QSupported)))? {
+            GdbResponse::Supported { features } => {
+                let has_packet_size = features.iter().any(|f| f.starts_with("PacketSize="));
+                if !has_packet_size {
+                    return Err(format!(
+                        "qSupported missing PacketSize in features: {:?}",
+                        features
+                    )
+                    .into());
+                }
+                log::info!("qSupported features: {:?}", features);
+            }
+            other => {
+                return Err(format!("Expected qSupported feature list, got: {other}").into());
+            }
+        }
+
+        // qfThreadInfo must return thread list (may be empty) or 'm...' chunk
+        log::info!("About to send qfThreadInfo...");
+        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QfThreadInfo)))? {
+            GdbResponse::ThreadInfo { threads, .. } => {
+                log::info!("qfThreadInfo threads: {:?}", threads);
+            }
+            other => {
+                return Err(format!("Expected thread info for qfThreadInfo, got: {other}").into());
+            }
+        }
+
+        // qsThreadInfo should continue list or return end
+        log::info!("About to send qsThreadInfo...");
+        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QsThreadInfo)))? {
+            GdbResponse::ThreadInfo { threads, .. } => {
+                log::info!("qsThreadInfo threads: {:?}", threads);
+            }
+            other => {
+                return Err(format!("Expected thread info for qsThreadInfo, got: {other}").into());
+            }
+        }
+
+        // '?' must return a stop reply (Sxx or Txx)
+        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QuestionMark)))? {
+            GdbResponse::StopReply { signal, .. } => {
+                log::info!("Got stop reply with signal 0x{signal:02x}");
+            }
+            other => {
+                return Err(format!("Expected stop reply for '?', got: {other}").into());
+            }
+        }
+
+        // 'g' must return register data; for RV32 expect >= 132 bytes (32 GPRs + PC), 4-byte aligned
+        match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::LowerG)))? {
+            GdbResponse::RegisterData { data } => {
+                if data.len() < 132 || (data.len() % 4) != 0 {
+                    return Err(format!(
+                        "Unexpected register data length (got {}, expected >= 132 and multiple of 4)",
+                        data.len()
+                    ).into());
+                }
+                log::info!("Register read length OK: {} bytes", data.len());
+            }
+            other => {
+                return Err(format!("Expected RegisterData for 'g' (LowerG), got: {other}").into());
             }
         }
 
@@ -820,7 +833,7 @@ mod tests {
         let handle = start_dang_instance(listener);
 
         // Give the server time to start
-        sleep(Duration::from_millis(300));
+        sleep(Duration::from_millis(1000));
 
         // Connect with the client to actual dang instance
         let mut client = Client::new_with_port(port);
@@ -851,7 +864,7 @@ mod tests {
         let handle = start_dang_instance(listener);
 
         // Give the server time to start
-        sleep(Duration::from_millis(300));
+        sleep(Duration::from_millis(1000));
 
         // Connect with the client to actual dang instance
         let mut client = Client::new_with_port(port);
@@ -960,7 +973,7 @@ mod tests {
         let handle = start_dang_instance(listener);
 
         // Give the server time to start
-        sleep(Duration::from_millis(300));
+        sleep(Duration::from_millis(1000));
 
         // Connect with the client to actual dang instance
         let mut client = Client::new_with_port(port);

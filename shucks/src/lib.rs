@@ -156,7 +156,7 @@ mod tests {
         let handle = start_dang_instance(listener);
 
         // Give the server time to start
-        sleep(Duration::from_millis(300));
+        sleep(Duration::from_millis(1000));
 
         // Connect with the client
         let mut cl = Client::new_with_port(port);
@@ -196,21 +196,15 @@ mod tests {
         // Start dang GDB stub in a separate thread
         let handle = start_dang_instance(listener);
 
-        check_server_init_with_backoff(port);
+        // Give the server time to start
+        sleep(Duration::from_millis(1000));
 
-        // Additional small delay to ensure server is fully ready
+        // Connect with the client
+        let mut cl = Client::new_with_port(port);
         sleep(Duration::from_millis(100));
 
-        // Connect with the client and run GDB initialization sequence with retries
-        let result = retry_with_backoff(
-            || {
-                let mut cl = Client::new_with_port(port);
-                cl.initialize_gdb_session()
-            },
-            1,
-        );
-
-        result.expect("Failed to initialize GDB session after retries");
+        cl.initialize_gdb_session()
+            .expect("Failed to initialize GDB session");
 
         sleep(Duration::from_millis(100));
 
@@ -227,7 +221,7 @@ mod tests {
         let handle = start_dang_instance(listener);
 
         // Give the server time to start
-        sleep(Duration::from_millis(300));
+        sleep(Duration::from_millis(1000));
 
         // Connect with the client
         let mut cl = Client::new_with_port(port);
@@ -259,7 +253,7 @@ mod tests {
         let handle = start_dang_instance(listener);
 
         // Give the server time to start
-        sleep(Duration::from_millis(300));
+        sleep(Duration::from_millis(1000));
 
         // Connect with the client
         let mut cl = Client::new_with_port(port);

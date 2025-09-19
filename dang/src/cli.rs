@@ -6,6 +6,7 @@ use crate::runtime;
 
 use super::runtime::Waver;
 use argh::FromArgs;
+use gdbstub::common::Signal;
 use gdbstub::conn::Connection;
 use gdbstub::conn::ConnectionExt;
 use gdbstub::stub::run_blocking;
@@ -13,7 +14,6 @@ use gdbstub::stub::DisconnectReason;
 use gdbstub::stub::GdbStub;
 use gdbstub::stub::SingleThreadStopReason;
 use gdbstub::target::Target;
-use gdbstub::common::Signal;
 use std::net::TcpStream;
 use std::{net::TcpListener, path::PathBuf};
 
@@ -51,29 +51,28 @@ fn wait_for_tcp(port: u16) -> DynResult<TcpStream> {
 
 pub fn wait_for_tcp_with_port(port: u16) -> DynResult<(TcpStream, u16)> {
     let sockaddr = format!("127.0.0.1:{port}");
-    log::warn!("Waiting for a GDB connection on {sockaddr:?}...");
+    log::debug!("Waiting for a GDB connection on {sockaddr:?}...");
 
     let sock = TcpListener::bind(sockaddr)?;
     let actual_addr = sock.local_addr()?;
     let actual_port = actual_addr.port();
-    log::warn!("Actually bound to {actual_addr:?}");
+    log::debug!("Actually bound to {actual_addr:?}");
 
     let (stream, addr) = sock.accept()?;
-    log::warn!("Debugger connected from {addr}");
+    log::debug!("Debugger connected from {addr}");
 
     Ok((stream, actual_port))
 }
 
 pub fn wait_for_tcp_with_listener(listener: TcpListener) -> DynResult<TcpStream> {
     let actual_addr = listener.local_addr()?;
-    log::warn!("Waiting for a GDB connection on {actual_addr:?}...");
+    log::debug!("Waiting for a GDB connection on {actual_addr:?}...");
 
     let (stream, addr) = listener.accept()?;
-    log::warn!("Debugger connected from {addr}");
+    log::debug!("Debugger connected from {addr}");
 
     Ok(stream)
 }
-
 
 enum DangGdbEventLoop {}
 
@@ -203,17 +202,22 @@ pub fn start_with_args_and_listener(
     elf: PathBuf,
     listener: TcpListener,
 ) -> DynResult<()> {
-    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
         .try_init();
-
-    log::info!("starting logger to stdout");
+    log::info!("started");
 
     let mut emu = Waver::new(wave_path, mapping_path, elf).expect("Could not create wave runtime");
+
+    log::info!("emulator made");
 
     let connection: Box<dyn ConnectionExt<Error = std::io::Error>> =
         { Box::new(wait_for_tcp_with_listener(listener)?) };
 
+    log::info!("connection made");
+
     let gdb = GdbStub::new(connection);
+
+    log::debug!("gdb stub made");
 
     match gdb.run_blocking::<DangGdbEventLoop>(&mut emu) {
         Ok(disconnect_reason) => match disconnect_reason {
@@ -278,4 +282,3 @@ pub fn start_with_args_and_listener_silent(
 
     Ok(())
 }
-

@@ -120,32 +120,52 @@ impl From<std::io::Error> for ParseError {
 
 /// GdbResponse data, sans the checksum -- if this exists, the checksum has already been validated
 #[derive(Debug, Clone, PartialEq)]
-pub struct RawGdbResponse(Vec<u8>);
+pub struct RawGdbResponse {
+    data: Vec<u8>,
+    omitted: usize,
+}
 
 impl RawGdbResponse {
     pub fn as_slice(&self) -> &[u8] {
-        self.0.as_slice()
+        self.data.as_slice()
     }
 
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.data.len()
     }
 
     /// Returns the length of the entire packet, including the checksum
     pub fn entire_packet_len(&self) -> usize {
-        self.0.len() + 3
+        // ack and nacks are single bytes
+        if self.data.len() == 1 && (self.data[0] == b'+' || self.data[0] == b'-') {
+            return 1;
+        } else {
+            // add 4 to account for the $ prefix, # separator, and checksum
+            self.data.len() + self.omitted
+        }
     }
 
     pub fn find_packet_data(data: &[u8]) -> Result<Self, ParseError> {
-        if data.len() == 1 && (data[0] == b'+' || data[0] == b'-') {
-            return Ok(Self(vec![data[0]]));
+        log::info!(
+            "find_packet_data: examining {} bytes: {:?}",
+            data.len(),
+            String::from_utf8_lossy(data)
+        );
+
+        if data.is_empty() {
+            return Err(ParseError::InvalidFormat("no data"));
         }
 
-        if data.len() == 3 && data == b"OK" {
-            return Ok(Self(data.to_vec()));
+        // Check for ACK/NACK as the first packet (single byte)
+        if data[0] == b'+' || data[0] == b'-' {
+            return Ok(Self {
+                data: vec![data[0]],
+                omitted: 0,
+            });
         }
 
         if data.len() < 4 || data[0] != b'$' {
+            log::info!("find_packet_data: packet too short or missing $ prefix");
             return Err(ParseError::InvalidFormat("missing $ prefix"));
         }
 
@@ -180,7 +200,10 @@ impl RawGdbResponse {
             );
             return Err(ParseError::InvalidChecksum);
         }
-        Ok(RawGdbResponse(content.to_vec()))
+        Ok(RawGdbResponse {
+            data: content.to_vec(),
+            omitted: 4, // 4 bytes omitted -- one for $ prefix, one for # separator, and two for checksum
+        })
     }
 }
 
