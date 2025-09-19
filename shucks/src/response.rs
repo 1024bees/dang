@@ -141,7 +141,7 @@ impl RawGdbResponse {
             return Ok(Self(vec![data[0]]));
         }
 
-        if data.len() == 2 && data == b"OK" {
+        if data.len() == 3 && data == b"OK" {
             return Ok(Self(data.to_vec()));
         }
 
@@ -160,10 +160,12 @@ impl RawGdbResponse {
             return Err(ParseError::InvalidFormat("missing checksum"));
         }
 
-        let content = &data[..hash_pos];
+        // we ignore the $ prefix
+        let content = &data[1..hash_pos];
         // Extract exactly 2 characters for checksum, ignore anything after
         let checksum_str = str::from_utf8(&data[hash_pos + 1..hash_pos + 3])
             .map_err(|_| ParseError::InvalidFormat("invalid checksum -- its not a string"))?;
+        log::info!("Checksum string: {checksum_str}");
 
         // Verify checksum
         let expected_checksum =
@@ -172,6 +174,10 @@ impl RawGdbResponse {
         let actual_checksum = content.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
 
         if actual_checksum != expected_checksum {
+            log::info!("Content: {content:?}");
+            log::info!(
+                "Actual checksum: {actual_checksum}, expected checksum: {expected_checksum}"
+            );
             return Err(ParseError::InvalidChecksum);
         }
         Ok(RawGdbResponse(content.to_vec()))
@@ -197,7 +203,7 @@ impl GdbResponse {
         );
         log::debug!(
             "AAAAAAAAAAPacket starts with {:?}, {}",
-            content[0],
+            content.get(0),
             content.starts_with(b"m")
         );
 
@@ -209,6 +215,10 @@ impl GdbResponse {
         let content_str = str::from_utf8(content).unwrap_or(""); // Allow non-UTF8 for binary data
 
         match content {
+            b"" => Ok(GdbResponse::Empty),
+
+            b"+" => Ok(GdbResponse::Ack),
+            b"-" => Ok(GdbResponse::Nack),
             // Simple OK response
             b"OK" => Ok(GdbResponse::Ok),
 
@@ -666,7 +676,12 @@ mod tests {
     #[test]
     fn test_parse_ok() {
         crate::init_test_logger();
-        assert_eq!(test_parse(b"$OK#9a").expect("Failed ok"), GdbResponse::Ok);
+        assert_eq!(
+            test_parse(b"$OK#9a")
+                .inspect_err(|e| log::info!("Error: {e:?}"))
+                .expect("Failed ok"),
+            GdbResponse::Ok
+        );
     }
 
     #[test]

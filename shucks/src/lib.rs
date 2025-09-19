@@ -207,7 +207,7 @@ mod tests {
                 let mut cl = Client::new_with_port(port);
                 cl.initialize_gdb_session()
             },
-            3,
+            1,
         );
 
         result.expect("Failed to initialize GDB session after retries");

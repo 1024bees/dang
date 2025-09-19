@@ -336,7 +336,8 @@ impl Client {
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QStartNoAckMode))) {
             Ok(_) => log::info!("Sent QStartNoAckMode"),
             Err(e) => {
-                log::info!("QStartNoAckMode failed: {e:?}, continuing...");
+                log::info!("QStartNoAckMode failed: {e:?}");
+                return Err(e);
             }
         }
 
@@ -344,7 +345,8 @@ impl Client {
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QSupported))) {
             Ok(_) => log::info!("Sent qSupported"),
             Err(e) => {
-                log::info!("qSupported failed: {e:?}, continuing...");
+                log::info!("qSupported failed: {e:?}");
+                return Err(e);
             }
         }
 
@@ -357,8 +359,8 @@ impl Client {
             }
             Err(e) => {
                 log::info!("qfThreadInfo failed: {e:?}");
-                // Try to continue without thread info for now
-                log::info!("Continuing without thread info...");
+
+                return Err(e);
             }
         }
 
@@ -371,8 +373,7 @@ impl Client {
             }
             Err(e) => {
                 log::info!("qsThreadInfo failed: {e:?}");
-                // Try to continue without thread info for now
-                log::info!("Continuing without thread info...");
+                return Err(e);
             }
         }
 
@@ -384,7 +385,8 @@ impl Client {
                 log::info!("Sent ? (halt reason query): {halt_reason}");
             }
             Err(e) => {
-                log::info!("Halt reason query failed: {e:?}, continuing anyway...");
+                log::info!("Halt reason query failed: {e:?}");
+                return Err(e);
             }
         }
 
@@ -401,7 +403,8 @@ impl Client {
                 }
             }
             Err(e) => {
-                log::info!("Reading registers failed: {e:?}, continuing...");
+                log::info!("Reading registers failed: {e:?}");
+                return Err(e);
             }
         }
 
