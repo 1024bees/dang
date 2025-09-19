@@ -208,8 +208,6 @@ impl RawGdbResponse {
 }
 
 impl GdbResponse {
-    /// Parse raw response bytes into a structured GdbResponse
-
     /// Parse a GDB packet (starting with '$' and ending with '#xx')
     pub fn parse_packet(content: RawGdbResponse, packet: &Packet) -> Result<Self, ParseError> {
         Self::parse_content(content, packet)
@@ -676,7 +674,7 @@ mod tests {
 
     pub fn parse_with_packet(data: &[u8], packet: &Packet) -> GdbResponse {
         let rv = RawGdbResponse::find_packet_data(data).unwrap();
-        
+
         GdbResponse::parse_packet(rv, packet).unwrap()
     }
 

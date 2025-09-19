@@ -78,55 +78,6 @@ mod tests {
     use crate::commands::{Base, GdbCommand, Resume};
     use std::{thread::sleep, time::Duration};
 
-    fn check_server_init_with_backoff(port: u16) {
-        // Wait for server to be ready with exponential backoff
-        let mut delay = Duration::from_millis(50);
-        let max_attempts = 10;
-        let mut connected = false;
-
-        for attempt in 0..max_attempts {
-            sleep(delay);
-            match std::net::TcpStream::connect(format!("127.0.0.1:{port}")) {
-                Ok(_) => {
-                    connected = true;
-                    break;
-                }
-                Err(_) => {
-                    if attempt < max_attempts - 1 {
-                        delay = std::cmp::min(delay * 2, Duration::from_millis(1000));
-                    }
-                }
-            }
-        }
-
-        if !connected {
-            panic!("Failed to connect to GDB server after {max_attempts} attempts");
-        }
-    }
-
-    // Helper function for retry logic with exponential backoff
-    fn retry_with_backoff<F, T, E>(mut f: F, max_attempts: u32) -> Result<T, E>
-    where
-        F: FnMut() -> Result<T, E>,
-    {
-        let mut delay = Duration::from_millis(100);
-
-        for attempt in 0..max_attempts {
-            match f() {
-                Ok(result) => return Ok(result),
-                Err(e) => {
-                    if attempt == max_attempts - 1 {
-                        return Err(e);
-                    }
-                    sleep(delay);
-                    delay = std::cmp::min(delay * 2, Duration::from_millis(500));
-                }
-            }
-        }
-
-        unreachable!()
-    }
-
     #[test]
     fn sanity() {
         crate::init_test_logger();

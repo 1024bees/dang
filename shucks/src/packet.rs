@@ -31,7 +31,7 @@ impl<'a> PacketCursor<'a> {
     pub fn finish(mut self) -> Result<FinishedPacket<'a>, std::io::Error> {
         let modsum = self.sum % 256;
         let str = format!("#{modsum:02x}");
-        self.cursor.write(str.as_bytes())?;
+        let _ = self.cursor.write(str.as_bytes())?;
         let slice_end = self.cursor.position() as usize;
         let slice = &self.cursor.into_inner()[0..slice_end];
         Ok(FinishedPacket(slice))
