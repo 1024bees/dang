@@ -42,6 +42,27 @@ env = { "PYO3_CONFIG_FILE" = "${CARGO_MAKE_WORKING_DIRECTORY}/python_env.txt" }
 dependencies = ["build-python", "export-env"]
 args = ["build", "--release"]
 
+# Documentation tasks
+[tasks.docs-build]
+description = "Build the mdbook documentation"
+command = "mdbook"
+args = ["build", "docs"]
+
+[tasks.docs-serve]
+description = "Serve the documentation locally"
+command = "mdbook"
+args = ["serve", "docs", "--open"]
+
+[tasks.docs-clean]
+description = "Clean the documentation build"
+command = "rm"
+args = ["-rf", "docs/book"]
+
+[tasks.docs-test]
+description = "Test code examples in documentation"
+command = "mdbook"
+args = ["test", "docs"]
+
 # This is the main flow: we specify steps in order
 [tasks.default]
 alias = "build-binary"

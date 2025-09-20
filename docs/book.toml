@@ -1,0 +1,22 @@
+[book]
+authors = ["James Connolly <jimmy@1024bees.com>"]
+language = "en"
+multilingual = false
+src = "src"
+title = "DANG: GDB for Pre-Silicon CPUs"
+description = "GDB for pre-silicon CPUs using waveforms"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/1024bees/dang"
+edit-url-template = "https://github.com/1024bees/dang/edit/main/docs/{path}"
+
+[output.html.search]
+enable = true
+
+[output.html.print]
+enable = true
