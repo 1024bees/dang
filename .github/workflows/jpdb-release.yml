@@ -1,0 +1,69 @@
+name: JPDB Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            binary_name: jpdb-macos-aarch64
+            archive_name: jpdb-macos-aarch64.tar.gz
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: jpdb-linux-x86_64
+            archive_name: jpdb-linux-x86_64.tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: jpdb-${{ matrix.target }}
+
+      - name: Build jpdb
+        run: cargo build --release -p jpdb --target ${{ matrix.target }}
+
+      - name: Package binary
+        run: |
+          mkdir -p artifacts
+          cp target/${{ matrix.target }}/release/jpdb artifacts/${{ matrix.binary_name }}
+          tar czf artifacts/${{ matrix.archive_name }} -C artifacts ${{ matrix.binary_name }}
+          rm artifacts/${{ matrix.binary_name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive_name }}
+          path: artifacts/${{ matrix.archive_name }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: jpdb ${{ github.ref_name }}
+          body: |
+            Automated release for tag `${{ github.ref_name }}`.
+          files: release-artifacts/**/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
