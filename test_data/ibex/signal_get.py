@@ -1,8 +1,8 @@
 from pywellen import Waveform, Signal
-from typing import List
+from typing import List, Dict
 
 
-def get_gdb_signals(wave: Waveform):
+def get_gdb_signals(wave: Waveform) -> Dict[str, Signal]:
     pc = wave.get_signal_from_path(
         "TOP.ibex_simple_system.u_top.u_ibex_top.u_ibex_core.wb_stage_i.pc_wb_o"
     )
@@ -16,6 +16,10 @@ def get_gdb_signals(wave: Waveform):
     rv = {"pc": pc, **gprs}
     return rv
 
-def get_misc_signals(wave: Waveform)-> List[Signal]:
-    return [wave.get_signal_from_path("TOP.ibex_simple_system.u_top.u_ibex_top.u_ibex_core.wb_stage_i.pc_wb_o")]
 
+def get_misc_signals(wave: Waveform) -> List[Signal]:
+    return [
+        wave.get_signal_from_path(
+            "TOP.ibex_simple_system.u_top.u_ibex_top.u_ibex_core.wb_stage_i.pc_wb_o"
+        )
+    ]

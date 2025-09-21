@@ -1,21 +1,96 @@
-# DANG: GDB for pre-silicon CPUs
+JPDB: GDB for waveforms
+-----------------------
 
-Dang is uses waveforms to recreate program executions and exposes those
-executions through a GDB server
+JPDB is a GDB inspired debugger for debugging pre-silicon CPUs.
 
-# Usage
+### Usage
 
-executing
+to get started 
 
-```bash
-dang test_data/ibex/sim.fst --mapping-path test_data/ibex/signal_get.py
-```
-
-will create a server on port 9001
-
-you can then connect to the gdb server using lldb or gdb. using lldb you would
-execute
+* a waveform 
+* a python mapping file, that translates signals in the waveform
+* the elf file that is being executed in the waveform
 
 ```bash
-lldb -connect connect://localhost:9001
+jpdb test_data/ibex/sim.fst --mapping-path test_data/ibex/signal_get.py
 ```
+
+your system python must be 3.10 or newer, otherwise jpdb might bark at you 
+
+### installation 
+
+jpdb can be installed via cargo 
+
+```bash 
+cargo install jpdb --locked
+```
+
+the releases page on github
+
+
+### mapping file
+
+The mapping file for JPDB is the translation layer that makes signals
+understandable for JPDB's internal gdb server stub. 
+
+the mapping file MUST contain a function named `get_gdb_signals` that returns a
+python `dict`. The returned python dictionary MUST contain the following keys:
+* pc: signal for the current retired pc
+* x0-x31: signals for each architectural general purpose register
+
+
+an example mapping file is below
+```python def get_gdb_signals(wave: Waveform) -> Dict[str, Signal]:
+    pc = wave.get_signal_from_path(
+        "TOP.ibex_simple_system.u_top.u_ibex_top.u_ibex_core.wb_stage_i.pc_wb_o"
+    )
+    gprs = {
+        f"x{i}": wave.get_signal_from_path(
+            f"TOP.ibex_simple_system.u_top.u_ibex_top.gen_regfile_ff.register_file_i.rf_reg.[{i}]"
+        ).sliced(0, 31)
+        for i in range(32)
+    }
+
+    rv = {"pc": pc, **gprs}
+    return rv
+```
+
+To just verify that the mapping file is well formed, you can execute 
+
+```bash
+jpdb test_data/ibex/sim.fst --mapping-path test_data/ibex/signal_get.py --verify-only
+```
+although this will happen when you launch jpdb normally
+
+
+
+### FAQ
+
+* does JPDB support superscalar CPUs?
+
+not yet, but if you give me a wave dump of a superscalar CPU, i will add support
+and thank you kindly
+
+
+* what instruction sets are supported?
+
+only RV32G, but if you have a dump of another instruction set, i will add
+support and thank you kindly
+
+* do i NEED to supply the elf file to use JPDB? 
+
+probably not, file an issue and i'll make that optional
+
+* n always steps into function calls whats up with that?
+
+yeah i need to fix that sorry
+
+* does jpdb hook into waveform viewers? 
+
+no, but it could integrate with vaporview or surfer fairly easily
+
+## acknowledgements
+
+`wellen` library made this easy, thank you kevin laeufer
+
+also tom verbeure did something similar a while back, shoutout
