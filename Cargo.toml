@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
 members = ["dang", "shucks", "jpdb"]
-default-members = ["dang"]
+default-members = ["jpdb"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.76.0"
-authors = ["James Connolly <jimmy@1024bees.com>"]
-description = "GDB for pre-silicon "
+authors = ["J Porkchop <jimmy@1024bees.com>"]
+description = "GDB for pre-silicon CPUs"
 repository = "https://github.com/1024bees/dang"
-keywords = ["vcd", "fst", "waveform", "wavedump"]
+keywords = ["vcd", "fst", "waveform", "wavedump", "gdb"]
 license = "MIT"
 
 [workspace.dependencies]

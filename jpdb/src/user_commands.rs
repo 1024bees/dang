@@ -7,6 +7,9 @@ pub enum UserCommand {
     Next,
     Step,
     Help,
+    Clear,
+    Breakpoint,
+    Continue,
 }
 
 impl UserCommand {
@@ -67,6 +70,53 @@ impl UserCommand {
                 }
                 Ok(())
             }
+            UserCommand::Clear => {
+                app.command_history.clear();
+                app.scroll_offset = 0;
+                Ok(())
+            }
+            UserCommand::Breakpoint => {
+                let addr_str = args.trim();
+                if addr_str.is_empty() {
+                    return Err("breakpoint requires an address argument".to_string());
+                }
+
+                // Parse address (support both hex with 0x prefix and without)
+                let addr = if addr_str.starts_with("0x") || addr_str.starts_with("0X") {
+                    u32::from_str_radix(&addr_str[2..], 16)
+                } else {
+                    u32::from_str_radix(addr_str, 16)
+                };
+
+                match addr {
+                    Ok(address) => {
+                        match app.shucks_client.set_breakpoint(address) {
+                            Ok(()) => {
+                                app.command_history.push(format!("Breakpoint set at address 0x{:x}", address));
+                                Ok(())
+                            }
+                            Err(e) => {
+                                Err(format!("Failed to set breakpoint: {}", e))
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        Err(format!("Invalid address format: {}", addr_str))
+                    }
+                }
+            }
+            UserCommand::Continue => {
+                app.command_history.push("Continuing...".to_string());
+                // Send continue command via shucks client
+                if let Err(e) = app.shucks_client.send_command_parsed(
+                    shucks::Packet::Command(shucks::commands::GdbCommand::Resume(
+                        shucks::commands::Resume::Continue
+                    ))
+                ) {
+                    return Err(format!("Error continuing execution: {}", e));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -77,6 +127,9 @@ impl UserCommand {
             UserCommand::Next => "next",
             UserCommand::Step => "step",
             UserCommand::Help => "help",
+            UserCommand::Clear => "clear",
+            UserCommand::Breakpoint => "breakpoint",
+            UserCommand::Continue => "continue",
         }
     }
 
@@ -87,6 +140,9 @@ impl UserCommand {
             UserCommand::Next => &["next", "n", " "],
             UserCommand::Step => &["step", "s"],
             UserCommand::Help => &["help", "h"],
+            UserCommand::Clear => &["clear", "cl"],
+            UserCommand::Breakpoint => &["breakpoint", "b"],
+            UserCommand::Continue => &["continue", "c"],
         }
     }
 
@@ -97,6 +153,9 @@ impl UserCommand {
             UserCommand::Next => "Execute the next instruction",
             UserCommand::Step => "Step one instruction (same as next)",
             UserCommand::Help => "Show help information",
+            UserCommand::Clear => "Clear the screen",
+            UserCommand::Breakpoint => "Set a breakpoint at the specified address",
+            UserCommand::Continue => "Continue execution until breakpoint",
         }
     }
 
@@ -107,6 +166,9 @@ impl UserCommand {
             UserCommand::Next => "next",
             UserCommand::Step => "step",
             UserCommand::Help => "help [command]",
+            UserCommand::Clear => "clear",
+            UserCommand::Breakpoint => "breakpoint <address>",
+            UserCommand::Continue => "continue",
         }
     }
 
@@ -117,6 +179,9 @@ impl UserCommand {
             UserCommand::Next => &["next", "n", " "],
             UserCommand::Step => &["step", "s"],
             UserCommand::Help => &["help", "help next", "h quit"],
+            UserCommand::Clear => &["clear", "cl"],
+            UserCommand::Breakpoint => &["breakpoint 0x1000", "b 1000", "b 0x8000"],
+            UserCommand::Continue => &["continue", "c"],
         }
     }
 
@@ -127,6 +192,9 @@ impl UserCommand {
             UserCommand::Next,
             UserCommand::Step,
             UserCommand::Help,
+            UserCommand::Clear,
+            UserCommand::Breakpoint,
+            UserCommand::Continue,
         ]
     }
 }

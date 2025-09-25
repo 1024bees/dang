@@ -703,6 +703,26 @@ impl Client {
 
         Ok(rv)
     }
+
+    /// Set a software breakpoint at the specified address
+    pub fn set_breakpoint(&mut self, addr: u32) -> Result<(), Box<dyn std::error::Error>> {
+        let response = self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::Z0 { addr })))?;
+
+        match response {
+            crate::response::GdbResponse::Ok => Ok(()),
+            _ => Err(format!("Failed to set breakpoint at address 0x{:x}: {}", addr, response).into())
+        }
+    }
+
+    /// Remove a software breakpoint at the specified address
+    pub fn remove_breakpoint(&mut self, addr: u32) -> Result<(), Box<dyn std::error::Error>> {
+        let response = self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::Z0Remove { addr })))?;
+
+        match response {
+            crate::response::GdbResponse::Ok => Ok(()),
+            _ => Err(format!("Failed to remove breakpoint at address 0x{:x}: {}", addr, response).into())
+        }
+    }
 }
 
 #[cfg(test)]

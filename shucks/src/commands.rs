@@ -26,6 +26,8 @@ pub enum Base {
     QStartNoAckMode,
     QXferExecFile { offset: u32, length: u32 },
     QRcmd { command: String },
+    Z0 { addr: u32 },  // Set software breakpoint
+    Z0Remove { addr: u32 },  // Remove software breakpoint
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +87,8 @@ impl Base {
             Self::T => "T",
             Self::QXferExecFile { .. } => "qXfer:exec-file:read",
             Self::QRcmd { .. } => "qRcmd",
+            Self::Z0 { .. } => "Z0",
+            Self::Z0Remove { .. } => "z0",
         }
     }
 
@@ -107,6 +111,14 @@ impl Base {
                 // Hex encode the command string
                 let hex_command: String = command.bytes().map(|b| format!("{b:02x}")).collect();
                 cursor.write_content(format!(",{hex_command}").as_bytes())?;
+            }
+            Self::Z0 { addr } => {
+                // Z0,addr,kind - Set software breakpoint
+                cursor.write_content(format!(",{addr:x},2").as_bytes())?;
+            }
+            Self::Z0Remove { addr } => {
+                // z0,addr,kind - Remove software breakpoint
+                cursor.write_content(format!(",{addr:x},2").as_bytes())?;
             }
             _ => {
                 // pass

@@ -169,6 +169,15 @@ impl App {
 
             if let Event::Key(key) = event::read()? {
                 match key.code {
+                    KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                        // Ctrl+D: Quit the application
+                        self.should_quit = true;
+                    }
+                    KeyCode::Char('l') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                        // Ctrl+L: Clear screen
+                        self.command_history.clear();
+                        self.scroll_offset = 0;
+                    }
                     KeyCode::Char('d') => {
                         // Toggle debug panel
                         self.show_debug_panel = !self.show_debug_panel;

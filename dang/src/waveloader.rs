@@ -217,6 +217,144 @@ pub fn execute_get_signals(
     Ok(val)
 }
 
+pub enum MappingParsedEvents {
+    FileStatus {
+        found: bool,
+    },
+    FunctionStatus {
+        found: bool,
+    },
+    /// If error message is null, it succeeded
+    WaveCreationStatus {
+        error_message: Option<String>,
+    },
+    /// If error essage is null, it succeeded
+    GetFnCall {
+        error_message: Option<String>,
+    },
+    /// If no missing signals, it succeeded
+    GDBSignalStatus {
+        missing_signals: Vec<String>,
+    },
+}
+
+pub fn validate_get_signals(
+    script: &Path,
+    fn_name: &str,
+    wave_path: &Path,
+) -> Vec<MappingParsedEvents> {
+    initialize();
+    let mut events = vec![];
+
+    let script_content = fs::read_to_string(script);
+    if let Err(_) = script_content {
+        events.push(MappingParsedEvents::FileStatus { found: false });
+        return events;
+    }
+    events.push(MappingParsedEvents::FileStatus { found: true });
+    let script_content = script_content.unwrap();
+
+    pyo3::prepare_freethreaded_python();
+    let py_result = Python::with_gil(|py| {
+        let activators =
+            PyModule::from_code_bound(py, script_content.as_str(), "signal_get.py", "signal_get");
+
+        let activators = match activators {
+            Ok(module) => module,
+            Err(e) => {
+                events.push(MappingParsedEvents::WaveCreationStatus {
+                    error_message: Some(format!("Failed to load Python module: {}", e)),
+                });
+                return Err(e);
+            }
+        };
+
+        let wave_result =
+            pywellen::Waveform::new(wave_path.to_string_lossy().to_string(), true, true);
+        let wave = match wave_result {
+            Ok(w) => {
+                events.push(MappingParsedEvents::WaveCreationStatus {
+                    error_message: None,
+                });
+                w
+            }
+            Err(e) => {
+                events.push(MappingParsedEvents::WaveCreationStatus {
+                    error_message: Some(e.to_string()),
+                });
+                return Err(pyo3::PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    e.to_string(),
+                ));
+            }
+        };
+
+        let wave_bound = Bound::new(py, wave)?;
+
+        let function_result = activators.getattr(fn_name);
+        let function = match function_result {
+            Ok(f) => {
+                events.push(MappingParsedEvents::FunctionStatus { found: true });
+                f
+            }
+            Err(e) => {
+                events.push(MappingParsedEvents::FunctionStatus { found: false });
+                events.push(MappingParsedEvents::GetFnCall {
+                    error_message: Some(format!("Function '{}' not found: {}", fn_name, e)),
+                });
+                return Err(e);
+            }
+        };
+
+        let call_result = function.call1((wave_bound,));
+        let all_waves: HashMap<String, pywellen::Signal> = match call_result {
+            Ok(result) => {
+                events.push(MappingParsedEvents::GetFnCall {
+                    error_message: None,
+                });
+                result.extract()?
+            }
+            Err(e) => {
+                events.push(MappingParsedEvents::GetFnCall {
+                    error_message: Some(format!("Function call failed: {}", e)),
+                });
+                return Err(e);
+            }
+        };
+
+        Ok(all_waves)
+    });
+
+    // Check for required GDB signals regardless of Python execution result
+    let mut missing_signals = vec![];
+
+    if let Ok(py_signals) = py_result {
+        // Convert to wellen signals
+        let wellen_signals: HashMap<String, wellen::Signal> = py_signals
+            .into_iter()
+            .filter_map(|(name, signal)| signal.to_wellen_signal().map(|s| (name, s)))
+            .collect();
+
+        // Check for required signals
+        if !wellen_signals.contains_key("pc") {
+            missing_signals.push("pc".to_string());
+        }
+
+        for i in 0..32 {
+            let signal_name = format!("x{}", i);
+            if !wellen_signals.contains_key(&signal_name) {
+                missing_signals.push(signal_name);
+            }
+        }
+    } else {
+        // If Python execution failed, we can't check for signals
+        missing_signals.push("Could not validate signals due to previous errors".to_string());
+    }
+
+    events.push(MappingParsedEvents::GDBSignalStatus { missing_signals });
+
+    events
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
