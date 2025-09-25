@@ -133,8 +133,12 @@ impl Loaded {
         let body = wellen::viewers::read_body(header.body, &hierarchy, None)?;
 
         let script_name = "get_gdb_signals";
-        let mut py_signals =
-            execute_get_signals(signal_py_file.as_path(), script_name, file_name.as_path())?;
+        let script_output =
+            validate_get_signals(signal_py_file.as_path(), script_name, file_name.as_path());
+        if script_output.signals.is_none() {
+            return Err(anyhow::anyhow!("Failed to validate get_gdb_signals"));
+        }
+        let mut py_signals = script_output.signals.unwrap();
 
         let pc = py_signals
             .remove("pc")
@@ -238,18 +242,29 @@ pub enum MappingParsedEvents {
     },
 }
 
-pub fn validate_get_signals(
-    script: &Path,
-    fn_name: &str,
-    wave_path: &Path,
-) -> Vec<MappingParsedEvents> {
+pub struct ValidationResult {
+    /// If None, it failed
+    pub signals: Option<HashMap<String, wellen::Signal>>,
+    pub all_events: Vec<MappingParsedEvents>,
+}
+
+impl ValidationResult {
+    pub fn from_events(all_events: Vec<MappingParsedEvents>) -> Self {
+        Self {
+            signals: None,
+            all_events,
+        }
+    }
+}
+
+pub fn validate_get_signals(script: &Path, fn_name: &str, wave_path: &Path) -> ValidationResult {
     initialize();
     let mut events = vec![];
 
     let script_content = fs::read_to_string(script);
     if let Err(_) = script_content {
         events.push(MappingParsedEvents::FileStatus { found: false });
-        return events;
+        return ValidationResult::from_events(events);
     }
     events.push(MappingParsedEvents::FileStatus { found: true });
     let script_content = script_content.unwrap();
@@ -327,7 +342,7 @@ pub fn validate_get_signals(
     // Check for required GDB signals regardless of Python execution result
     let mut missing_signals = vec![];
 
-    if let Ok(py_signals) = py_result {
+    let signals = if let Ok(py_signals) = py_result {
         // Convert to wellen signals
         let wellen_signals: HashMap<String, wellen::Signal> = py_signals
             .into_iter()
@@ -345,14 +360,15 @@ pub fn validate_get_signals(
                 missing_signals.push(signal_name);
             }
         }
+        Some(wellen_signals)
     } else {
-        // If Python execution failed, we can't check for signals
-        missing_signals.push("Could not validate signals due to previous errors".to_string());
+        None
+    };
+
+    ValidationResult {
+        signals,
+        all_events: events,
     }
-
-    events.push(MappingParsedEvents::GDBSignalStatus { missing_signals });
-
-    events
 }
 
 #[cfg(test)]
@@ -374,18 +390,18 @@ mod tests {
         let wave_path = PathBuf::from(cargo_manifest_dir).join("../test_data/ibex/sim.fst");
 
         // Call the function
-        let result = execute_get_signals(script_path.as_path(), fn_name, wave_path.as_path());
+        let result = validate_get_signals(script_path.as_path(), fn_name, wave_path.as_path());
 
         // Check the result
-        match result {
-            Ok(signals) => {
+        match result.signals {
+            Some(signals) => {
                 dbg!(&signals);
                 // Perform assertions on the signals
                 assert!(!signals.is_empty(), "Signals should not be empty");
                 // Add more assertions as needed
                 //
             }
-            Err(e) => panic!("Function execution failed: {e:?}"),
+            None => panic!("Function execution failed"),
         }
     }
 }
