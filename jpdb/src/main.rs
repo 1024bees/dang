@@ -92,6 +92,8 @@ pub struct App {
     // Split view state
     show_split_view: bool,
     log_buffer: Arc<Mutex<VecDeque<LogMessage>>>,
+    // Last executed command for repeat functionality
+    last_command: Option<String>,
 }
 
 impl Default for App {
@@ -153,6 +155,7 @@ impl Default for App {
             show_debug_panel: false,
             show_split_view: false,
             log_buffer,
+            last_command: None,
         };
 
         // Add initial state to command history
@@ -229,17 +232,31 @@ impl App {
     fn process_command(&mut self) {
         let input = self.input_buffer.trim().to_string();
 
-        // Skip empty commands
-        if input.is_empty() {
-            return;
-        }
+        // Handle empty input - repeat last command if available
+        let command_to_execute = if input.is_empty() {
+            if let Some(ref last_cmd) = self.last_command {
+                // Show that we're repeating the last command
+                let display_command = format!("(jpdb) {last_cmd}");
+                self.command_history.push(display_command);
+                last_cmd.clone()
+            } else {
+                // No last command to repeat
+                return;
+            }
+        } else {
+            // Store non-empty command as last command (but exclude certain commands)
+            if !matches!(input.as_str(), "quit" | "q" | "clear" | "cl") {
+                self.last_command = Some(input.clone());
+            }
 
-        // Add command to history
-        let display_command = format!("(jpdb) {input}");
-        self.command_history.push(display_command);
+            // Add command to history
+            let display_command = format!("(jpdb) {input}");
+            self.command_history.push(display_command);
+            input
+        };
 
         // Parse command and arguments
-        let parts: Vec<&str> = input.splitn(2, ' ').collect();
+        let parts: Vec<&str> = command_to_execute.splitn(2, ' ').collect();
         let command_name = parts[0];
         let args = parts.get(1).map_or("", |v| *v);
 
