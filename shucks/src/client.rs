@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::{
+    addr2line_stepper::Addr2lineStepper,
     commands::{Base, GdbCommand},
     response::{GdbResponse, RawGdbResponse},
     Packet,
@@ -16,8 +17,9 @@ use wellen::simple::Waveform;
 pub struct Client {
     strm: TcpStream,
     packet_scratch: [u8; 4096],
-    elf_info: Option<ElfInfo>,
     response_buffer: Vec<u8>,
+    elf_info: Option<ElfInfo>,
+    addr2line_stepper: Option<Addr2lineStepper>,
 }
 
 #[derive(Copy, Clone)]
@@ -130,6 +132,7 @@ impl Client {
             strm,
             packet_scratch: [0; 4096],
             elf_info: None,
+            addr2line_stepper: None,
             response_buffer: Vec::new(),
         }
     }
@@ -442,8 +445,7 @@ impl Client {
     }
 
     /// Parse ELF file from the given path and store information
-    pub fn parse_elf_file(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let elf_data = fs::read(path)?;
+    pub fn parse_elf_file(&mut self, elf_data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         let elf = Elf::parse(&elf_data)?;
 
         // Check if it's 32-bit and RISC-V
@@ -597,7 +599,9 @@ impl Client {
     /// Load and parse ELF file automatically from executable path
     pub fn load_elf_info(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let elf_path = self.get_executable_path()?;
-        self.parse_elf_file(&elf_path)?;
+        let elf_data = fs::read(&elf_path)?;
+        self.parse_elf_file(&elf_data)?;
+        self.addr2line_stepper = Addr2lineStepper::new(&elf_data, 0, Vec::new().ok();
         Ok(())
     }
 

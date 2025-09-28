@@ -15,7 +15,10 @@ gdbstub_arch = { workspace = true }
 raki = { workspace = true }
 wellen = { workspace = true }
 goblin = "0.10"
-
+anyhow = { workspace = true }
+object = { workspace = true }
+addr2line = { workspace = true }
+gimli = "0.31"
 
 log = { workspace = true }
 

@@ -1,5 +1,6 @@
 use std::io;
 
+pub mod addr2line_stepper;
 pub mod client;
 pub mod commands;
 pub mod packet;
