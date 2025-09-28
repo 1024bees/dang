@@ -181,46 +181,6 @@ fn initialize() {
     });
 }
 
-pub fn execute_get_signals(
-    script: &Path,
-    fn_name: &str,
-    wave_path: &Path,
-) -> PyResult<HashMap<String, wellen::Signal>> {
-    initialize();
-
-    let script_content = fs::read_to_string(script).expect("Failed to read script file");
-
-    pyo3::prepare_freethreaded_python();
-    let val = {
-        let val: PyResult<HashMap<String, pywellen::Signal>> = Python::with_gil(|py| {
-            let activators = PyModule::from_code_bound(
-                py,
-                script_content.as_str(),
-                "signal_get.py",
-                "signal_get",
-            )?;
-            let wave = Bound::new(
-                py,
-                pywellen::Waveform::new(wave_path.to_string_lossy().to_string(), true, true)?,
-            )?;
-
-            let all_waves: HashMap<String, pywellen::Signal> =
-                activators.getattr(fn_name)?.call1((wave,))?.extract()?;
-
-            Ok(all_waves)
-        });
-        val
-    };
-    let val = val?
-        .into_iter()
-        .map(|(name, signal)| (name, signal.to_wellen_signal().unwrap()))
-        .fold(HashMap::new(), |mut mapper, val| {
-            mapper.insert(val.0, val.1);
-            mapper
-        });
-    Ok(val)
-}
-
 pub enum MappingParsedEvents {
     FileStatus {
         found: bool,

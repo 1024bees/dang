@@ -19,6 +19,8 @@ gdbstub_arch = "0.3.0"
 log = "0.4.22"
 env_logger = "0.11.6"
 raki = "1.3.2"
+wellen = { git = "https://github.com/1024bees/wellen.git", branch = "signal-builders" }
+pywellen = { git = "https://github.com/1024bees/wellen.git", branch = "signal-builders" }
 
 [profile.release]
 debug = true

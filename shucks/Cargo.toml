@@ -13,6 +13,7 @@ license.workspace = true
 gdbstub = { workspace = true }
 gdbstub_arch = { workspace = true }
 raki = { workspace = true }
+wellen = { workspace = true }
 goblin = "0.10"
 
 

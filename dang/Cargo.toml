@@ -9,8 +9,8 @@ edition = "2021"
 anyhow = "1.0.86"
 gdbstub = { workspace = true }
 gdbstub_arch = { workspace = true }
-wellen = { git = "https://github.com/1024bees/wellen.git", branch = "signal-builders" }
-pywellen = { git = "https://github.com/1024bees/wellen.git", branch = "signal-builders" }
+wellen = { workspace = true }
+pywellen = { workspace = true }
 
 
 num-bigint = "0.4.6"
