@@ -7,6 +7,7 @@ pub mod packet;
 pub mod response;
 
 pub use client::Client;
+pub use addr2line_stepper::SourceLine;
 use commands::{Base, GdbCommand};
 use packet::FinishedPacket;
 

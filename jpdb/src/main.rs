@@ -89,6 +89,8 @@ pub struct App {
     scroll_offset: usize,
     // Debug panel state
     show_debug_panel: bool,
+    // Split view state
+    show_split_view: bool,
     log_buffer: Arc<Mutex<VecDeque<LogMessage>>>,
 }
 
@@ -149,6 +151,7 @@ impl Default for App {
             _dang_thread_handle: dang_handle,
             scroll_offset: 0,
             show_debug_panel: false,
+            show_split_view: false,
             log_buffer,
         };
 
@@ -302,8 +305,15 @@ impl App {
                 .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
                 .split(f.area());
 
-            self.render_combined_output(f, chunks[0]);
+            if self.show_split_view {
+                self.render_split_view(f, chunks[0]);
+            } else {
+                self.render_combined_output(f, chunks[0]);
+            }
             self.render_debug_panel(f, chunks[1]);
+        } else if self.show_split_view {
+            // Show split view without debug panel
+            self.render_split_view(f, f.area());
         } else {
             // Render everything as one continuous output with prompt at the end
             self.render_combined_output(f, f.area());
@@ -397,6 +407,161 @@ impl App {
         );
 
         f.render_widget(debug_panel, area);
+    }
+
+    fn render_split_view(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
+        // Split the area vertically: panels (top 70%) and command bar (bottom 30%)
+        let main_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
+            .split(area);
+
+        // Split the top area horizontally: instructions (left) and source code (right)
+        let panel_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+            .split(main_chunks[0]);
+
+        self.render_instruction_pane(f, panel_chunks[0]);
+        self.render_source_pane(f, panel_chunks[1]);
+        self.render_command_bar(f, main_chunks[1]);
+    }
+
+    fn render_instruction_pane(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
+        // Get current and next instructions
+        let mut instruction_lines = Vec::new();
+
+        match self.shucks_client.get_current_and_next_inst() {
+            Ok(instructions) => {
+                for (i, inst) in instructions.iter().enumerate() {
+                    let pc = inst.pc().as_u32();
+                    if i == 0 {
+                        // Current instruction with arrow
+                        instruction_lines.push(format!("->  0x{pc:x}: {inst}"));
+                    } else {
+                        // Next instructions
+                        instruction_lines.push(format!("    0x{pc:x}: {inst}"));
+                    }
+                }
+            }
+            Err(e) => {
+                instruction_lines.push(format!("Error: {e}"));
+            }
+        }
+
+        let items: Vec<ListItem> = instruction_lines
+            .iter()
+            .map(|line| {
+                let style = if line.starts_with("->") {
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else if line.starts_with("Error:") {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(line.clone()).style(style)
+            })
+            .collect();
+
+        let instruction_panel = List::new(items).block(
+            Block::default()
+                .borders(ratatui::widgets::Borders::ALL)
+                .title("Instructions"),
+        );
+
+        f.render_widget(instruction_panel, area);
+    }
+
+    fn render_source_pane(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
+        let mut source_lines = Vec::new();
+
+        // Get current source line
+        match self.shucks_client.get_current_source_line() {
+            Ok(Some(current_line)) => {
+                source_lines.push(format!("{}:{}",
+                    current_line.path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown"),
+                    current_line.line));
+                source_lines.push("".to_string());
+
+                // Show current line with arrow
+                if let Some(ref text) = current_line.text {
+                    source_lines.push(format!("-> {}: {}", current_line.line, text));
+                } else {
+                    source_lines.push(format!("-> {}: <source not available>", current_line.line));
+                }
+
+                // Get next 3 source lines
+                match self.shucks_client.get_next_source_lines(3) {
+                    Ok(next_lines) => {
+                        for line in next_lines {
+                            if let Some(ref text) = line.text {
+                                source_lines.push(format!("   {}: {}", line.line, text));
+                            } else {
+                                source_lines.push(format!("   {}: <source not available>", line.line));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        source_lines.push(format!("Error getting next lines: {e}"));
+                    }
+                }
+            }
+            Ok(None) => {
+                source_lines.push("Source Code:".to_string());
+                source_lines.push("No debug information available".to_string());
+            }
+            Err(e) => {
+                source_lines.push("Source Code:".to_string());
+                source_lines.push(format!("Error: {e}"));
+            }
+        }
+
+        let items: Vec<ListItem> = source_lines
+            .iter()
+            .map(|line| {
+                let style = if line.starts_with("->") {
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else if line.starts_with("Error:") {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(line.clone()).style(style)
+            })
+            .collect();
+
+        let source_panel = List::new(items).block(
+            Block::default()
+                .borders(ratatui::widgets::Borders::ALL)
+                .title("Source Code"),
+        );
+
+        f.render_widget(source_panel, area);
+    }
+
+    fn render_command_bar(&self, f: &mut Frame, area: ratatui::layout::Rect) {
+        // Create command input area
+        let prompt_text = format!("(jpdb) {}", self.input_buffer);
+
+        let command_items = vec![ListItem::new(prompt_text).style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        )];
+
+        let command_panel = List::new(command_items).block(
+            Block::default()
+                .borders(ratatui::widgets::Borders::ALL)
+                .title("Command"),
+        );
+
+        f.render_widget(command_panel, area);
     }
 }
 

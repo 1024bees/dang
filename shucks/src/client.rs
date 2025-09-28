@@ -500,7 +500,7 @@ impl Client {
             machine: elf.header.e_machine,
             text_section,
             symbols,
-            elf_data,
+            elf_data: elf_data.to_vec(),
         });
 
         Ok(())
@@ -601,7 +601,7 @@ impl Client {
         let elf_path = self.get_executable_path()?;
         let elf_data = fs::read(&elf_path)?;
         self.parse_elf_file(&elf_data)?;
-        self.addr2line_stepper = Addr2lineStepper::new(&elf_data, 0, Vec::new().ok();
+        self.addr2line_stepper = Addr2lineStepper::new(&elf_data, 0, Vec::new()).ok();
         Ok(())
     }
 
@@ -736,6 +736,35 @@ impl Client {
                 addr, response
             )
             .into()),
+        }
+    }
+
+    /// Get the current source line for the current PC
+    pub fn get_current_source_line(&mut self) -> Result<Option<crate::addr2line_stepper::SourceLine>, Box<dyn std::error::Error>> {
+        let pc = self.get_current_pc()?;
+        if let Some(ref stepper) = self.addr2line_stepper {
+            Ok(stepper.current_line(pc.as_u64())?)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get the next 3 source lines after the current PC using upcoming instruction addresses
+    pub fn get_next_source_lines(&mut self, count: usize) -> Result<Vec<crate::addr2line_stepper::SourceLine>, Box<dyn std::error::Error>> {
+        let pc = self.get_current_pc()?;
+        let instructions = self.get_current_and_next_inst()?;
+
+        if let Some(ref stepper) = self.addr2line_stepper {
+            // Extract addresses from instructions (skip the first one as it's current)
+            let next_addrs: Vec<u64> = instructions
+                .iter()
+                .skip(1)
+                .map(|inst| inst.pc().as_u64())
+                .collect();
+
+            Ok(stepper.next_lines_from_instructions(pc.as_u64(), next_addrs, count)?)
+        } else {
+            Ok(Vec::new())
         }
     }
 }

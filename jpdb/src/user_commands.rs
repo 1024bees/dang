@@ -10,6 +10,7 @@ pub enum UserCommand {
     Clear,
     Breakpoint,
     Continue,
+    Toggle,
 }
 
 impl UserCommand {
@@ -45,6 +46,11 @@ impl UserCommand {
                         ));
                     }
 
+                    app.command_history.push("".to_string());
+                    app.command_history.push("Keyboard shortcuts:".to_string());
+                    app.command_history.push("  d         -- Toggle debug panel".to_string());
+                    app.command_history.push("  Ctrl+D    -- Quit the debugger".to_string());
+                    app.command_history.push("  Ctrl+L    -- Clear screen".to_string());
                     app.command_history.push("".to_string());
                 } else {
                     // Show specific command help
@@ -117,6 +123,15 @@ impl UserCommand {
                 }
                 Ok(())
             }
+            UserCommand::Toggle => {
+                app.show_split_view = !app.show_split_view;
+                if app.show_split_view {
+                    app.command_history.push("Split view enabled (instructions | source code)".to_string());
+                } else {
+                    app.command_history.push("Split view disabled".to_string());
+                }
+                Ok(())
+            }
         }
     }
 
@@ -130,6 +145,7 @@ impl UserCommand {
             UserCommand::Clear => "clear",
             UserCommand::Breakpoint => "breakpoint",
             UserCommand::Continue => "continue",
+            UserCommand::Toggle => "toggle",
         }
     }
 
@@ -143,6 +159,7 @@ impl UserCommand {
             UserCommand::Clear => &["clear", "cl"],
             UserCommand::Breakpoint => &["breakpoint", "b"],
             UserCommand::Continue => &["continue", "c"],
+            UserCommand::Toggle => &["toggle", "t"],
         }
     }
 
@@ -156,6 +173,7 @@ impl UserCommand {
             UserCommand::Clear => "Clear the screen",
             UserCommand::Breakpoint => "Set a breakpoint at the specified address",
             UserCommand::Continue => "Continue execution until breakpoint",
+            UserCommand::Toggle => "Toggle split view (instructions | source code)",
         }
     }
 
@@ -169,6 +187,7 @@ impl UserCommand {
             UserCommand::Clear => "clear",
             UserCommand::Breakpoint => "breakpoint <address>",
             UserCommand::Continue => "continue",
+            UserCommand::Toggle => "toggle",
         }
     }
 
@@ -182,6 +201,7 @@ impl UserCommand {
             UserCommand::Clear => &["clear", "cl"],
             UserCommand::Breakpoint => &["breakpoint 0x1000", "b 1000", "b 0x8000"],
             UserCommand::Continue => &["continue", "c"],
+            UserCommand::Toggle => &["toggle", "t"],
         }
     }
 
@@ -195,6 +215,7 @@ impl UserCommand {
             UserCommand::Clear,
             UserCommand::Breakpoint,
             UserCommand::Continue,
+            UserCommand::Toggle,
         ]
     }
 }
