@@ -249,6 +249,31 @@ impl Addr2lineStepper {
         Ok(out)
     }
 
+    /// Return the next `n` consecutive source lines after the given line from the same file.
+    ///
+    /// This reads directly from the source file regardless of whether those lines
+    /// have associated instruction addresses.
+    pub fn get_consecutive_lines_after(&self, path: &Path, start_line: u64, n: usize) -> Result<Vec<SourceLine>> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut result = Vec::with_capacity(n);
+
+        for i in 1..=n {
+            let line_num = start_line + i as u64;
+            let text = self.read_line_1_based(path, line_num as usize);
+
+            result.push(SourceLine {
+                path: path.to_path_buf(),
+                line: line_num,
+                text,
+            });
+        }
+
+        Ok(result)
+    }
+
     // --- helpers -------------------------------------------------------------
 
     /// Map a runtime address to (path, line) using addr2line.

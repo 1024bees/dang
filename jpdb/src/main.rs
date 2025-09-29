@@ -81,7 +81,7 @@ impl log::Log for AppLogger {
 
 pub struct App {
     pub should_quit: bool,
-    _close_inst: Vec<Option<Instruction>>,
+
     input_buffer: String,
     pub command_history: Vec<String>,
     pub shucks_client: Client,
@@ -143,7 +143,6 @@ impl Default for App {
 
         let mut app = App {
             should_quit: false,
-            _close_inst: Vec::new(),
             input_buffer: String::new(),
             command_history: Vec::new(),
             shucks_client,
@@ -232,7 +231,8 @@ impl App {
                                     if index < self.user_command_history.len() - 1 {
                                         let new_index = index + 1;
                                         self.history_index = Some(new_index);
-                                        self.input_buffer = self.user_command_history[new_index].clone();
+                                        self.input_buffer =
+                                            self.user_command_history[new_index].clone();
                                     } else {
                                         // Wrap to oldest (beginning of history)
                                         self.history_index = Some(0);
@@ -555,8 +555,11 @@ impl App {
                     source_lines.push(format!("-> {}: <source not available>", current_line.line));
                 }
 
-                // Get next 3 source lines
-                match self.shucks_client.get_next_source_lines(3) {
+                // Get next 3 consecutive source lines from the same file
+                match self
+                    .shucks_client
+                    .get_consecutive_source_lines_after_current(3)
+                {
                     Ok(next_lines) => {
                         for line in next_lines {
                             if let Some(ref text) = line.text {

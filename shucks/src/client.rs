@@ -812,6 +812,22 @@ impl Client {
             Ok(Vec::new())
         }
     }
+
+    /// Get the next consecutive source lines after the current PC from the same file
+    pub fn get_consecutive_source_lines_after_current(
+        &mut self,
+        count: usize,
+    ) -> Result<Vec<crate::addr2line_stepper::SourceLine>, Box<dyn std::error::Error>> {
+        if let Some(current_line) = self.get_current_source_line()? {
+            if let Some(ref stepper) = self.addr2line_stepper {
+                Ok(stepper.get_consecutive_lines_after(&current_line.path, current_line.line, count)?)
+            } else {
+                Ok(Vec::new())
+            }
+        } else {
+            Ok(Vec::new())
+        }
+    }
 }
 
 #[cfg(test)]
