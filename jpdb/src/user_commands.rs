@@ -81,7 +81,10 @@ impl UserCommand {
                 let registry = CommandRegistry::new();
                 if args.trim().is_empty() {
                     // Show all commands in LLDB style
-                    app.command_history.push("Current command abbreviations (type 'help command alias' for more info):".to_string());
+                    app.command_history.push(
+                        "Current command abbreviations (type 'help command alias' for more info):"
+                            .to_string(),
+                    );
 
                     for cmd in UserCommand::all() {
                         let aliases_str = cmd.aliases().join(", ");
@@ -94,9 +97,12 @@ impl UserCommand {
 
                     app.command_history.push("".to_string());
                     app.command_history.push("Keyboard shortcuts:".to_string());
-                    app.command_history.push("  d         -- Toggle debug panel".to_string());
-                    app.command_history.push("  Ctrl+D    -- Quit the debugger".to_string());
-                    app.command_history.push("  Ctrl+L    -- Clear screen".to_string());
+                    app.command_history
+                        .push("  d         -- Toggle debug panel".to_string());
+                    app.command_history
+                        .push("  Ctrl+D    -- Quit the debugger".to_string());
+                    app.command_history
+                        .push("  Ctrl+L    -- Clear screen".to_string());
                     app.command_history.push("".to_string());
                 } else {
                     // Show specific command help
@@ -127,60 +133,68 @@ impl UserCommand {
                 app.scroll_offset = 0;
                 Ok(())
             }
-            UserCommand::Breakpoint => {
-                match parse_breakpoint_arg(args)? {
-                    BreakpointTarget::Address(address) => {
-                        match app.shucks_client.set_breakpoint(address) {
-                            Ok(()) => {
-                                app.command_history.push(format!("Breakpoint set at address 0x{:x}", address));
-                                Ok(())
-                            }
-                            Err(e) => {
-                                Err(format!("Failed to set breakpoint: {}", e))
-                            }
+            UserCommand::Breakpoint => match parse_breakpoint_arg(args)? {
+                BreakpointTarget::Address(address) => {
+                    match app.shucks_client.set_breakpoint(address) {
+                        Ok(()) => {
+                            app.command_history
+                                .push(format!("Breakpoint set at address 0x{:x}", address));
+                            Ok(())
                         }
-                    }
-                    BreakpointTarget::FileLine { file, line } => {
-                        let file_str = file.to_string_lossy();
-                        match app.shucks_client.set_breakpoint_at_line(&file_str, line) {
-                            Ok(addresses) => {
-                                if addresses.len() == 1 {
-                                    app.command_history.push(format!(
-                                        "Breakpoint set at {}:{} (address 0x{:x})",
-                                        file_str, line, addresses[0]
-                                    ));
-                                } else {
-                                    app.command_history.push(format!(
-                                        "Breakpoint set at {}:{} ({} addresses: {})",
-                                        file_str, line, addresses.len(),
-                                        addresses.iter().map(|a| format!("0x{:x}", a)).collect::<Vec<_>>().join(", ")
-                                    ));
-                                }
-                                Ok(())
-                            }
-                            Err(e) => {
-                                Err(format!("Failed to set breakpoint at {}:{}: {}", file_str, line, e))
-                            }
-                        }
+                        Err(e) => Err(format!("Failed to set breakpoint: {}", e)),
                     }
                 }
-            }
+                BreakpointTarget::FileLine { file, line } => {
+                    let file_str = file.to_string_lossy();
+                    match app.shucks_client.set_breakpoint_at_line(&file_str, line) {
+                        Ok(addresses) => {
+                            if addresses.len() == 1 {
+                                app.command_history.push(format!(
+                                    "Breakpoint set at {}:{} (address 0x{:x})",
+                                    file_str, line, addresses[0]
+                                ));
+                            } else {
+                                app.command_history.push(format!(
+                                    "Breakpoint set at {}:{} ({} addresses: {})",
+                                    file_str,
+                                    line,
+                                    addresses.len(),
+                                    addresses
+                                        .iter()
+                                        .map(|a| format!("0x{:x}", a))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ));
+                            }
+                            Ok(())
+                        }
+                        Err(e) => Err(format!(
+                            "Failed to set breakpoint at {}:{}: {}",
+                            file_str, line, e
+                        )),
+                    }
+                }
+            },
             UserCommand::Continue => {
                 app.command_history.push("Continuing...".to_string());
                 // Send continue command via shucks client
-                if let Err(e) = app.shucks_client.send_command_parsed(
-                    shucks::Packet::Command(shucks::commands::GdbCommand::Resume(
-                        shucks::commands::Resume::Continue
+                if let Err(e) = app
+                    .shucks_client
+                    .send_command_parsed(shucks::Packet::Command(
+                        shucks::commands::GdbCommand::Resume(shucks::commands::Resume::Continue),
                     ))
-                ) {
+                {
                     return Err(format!("Error continuing execution: {}", e));
                 }
+                // Invalidate cache since execution state changed
+                app.invalidate_time_idx_cache();
                 Ok(())
             }
             UserCommand::Toggle => {
                 app.show_split_view = !app.show_split_view;
                 if app.show_split_view {
-                    app.command_history.push("Split view enabled (instructions | source code)".to_string());
+                    app.command_history
+                        .push("Split view enabled (instructions | source code)".to_string());
                 } else {
                     app.command_history.push("Split view disabled".to_string());
                 }
@@ -261,7 +275,12 @@ impl UserCommand {
             UserCommand::Step => &["step", "s"],
             UserCommand::Help => &["help", "help next", "h quit"],
             UserCommand::Clear => &["clear", "cl"],
-            UserCommand::Breakpoint => &["breakpoint 0x1000", "b 1000", "b main.c:42", "b src/lib.rs:123"],
+            UserCommand::Breakpoint => &[
+                "breakpoint 0x1000",
+                "b 1000",
+                "b main.c:42",
+                "b src/lib.rs:123",
+            ],
             UserCommand::Continue => &["continue", "c"],
             UserCommand::Toggle => &["toggle", "t"],
             UserCommand::Addsig => &["addsig", "as"],
@@ -368,4 +387,3 @@ mod tests {
         );
     }
 }
-

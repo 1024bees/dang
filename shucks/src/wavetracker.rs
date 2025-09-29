@@ -89,12 +89,12 @@ impl WaveformTracker {
         });
     }
 
-    pub fn get_current_time(&self, timetableidx: TimeTableIdx) -> Option<Time> {
+    pub fn get_current_time(&self, timetableidx: TimeTableIdx) -> Time {
         self.waveform
             .time_table()
             .get(timetableidx as usize)
             .copied()
-            .unwrap_or(0);
+            .unwrap_or(0)
     }
 
     pub fn get_scale_factor(&self, var: Var) -> &'static str {

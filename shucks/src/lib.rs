@@ -9,7 +9,7 @@ mod wavetracker;
 
 pub use addr2line_stepper::SourceLine;
 pub use client::Client;
-pub use wellen::Var;
+pub use wellen::{TimeTableIdx, Var};
 use commands::{Base, GdbCommand};
 use packet::FinishedPacket;
 

@@ -25,7 +25,7 @@ use ratatui::{
 };
 use shucks::{
     commands::{GdbCommand, Resume},
-    Client, Packet, Var,
+    Client, Packet, TimeTableIdx, Var,
 };
 
 // Custom logger that captures messages for ratatui display
@@ -124,7 +124,9 @@ impl AddsigState {
 
     pub fn set_matches(&mut self, matches: Vec<(Var, String)>) {
         self.matches = matches.into_iter().take(10).collect(); // Take top 10
-        self.selected_index = self.selected_index.min(self.matches.len().saturating_sub(1));
+        self.selected_index = self
+            .selected_index
+            .min(self.matches.len().saturating_sub(1));
     }
 
     pub fn get_matches(&self) -> &[(Var, String)] {
@@ -177,6 +179,8 @@ pub struct App {
     history_index: Option<usize>,
     // Addsig floating window state
     addsig_state: AddsigState,
+    // Cache for time index to avoid overwhelming GDB server
+    cached_time_idx: Option<u64>,
 }
 
 impl Default for App {
@@ -245,6 +249,7 @@ impl Default for App {
             user_command_history: Vec::new(),
             history_index: None,
             addsig_state: AddsigState::new(),
+            cached_time_idx: None, // Initialize cache as empty
         };
 
         // Show initial instructions when first connecting
@@ -255,6 +260,23 @@ impl Default for App {
 }
 
 impl App {
+    /// Get the current time index with caching to avoid overwhelming the GDB server
+    /// Cache is invalidated after step, next, or continue commands
+    fn get_cached_time_idx(&mut self) -> Result<u64, Box<dyn std::error::Error>> {
+        if let Some(cached_value) = self.cached_time_idx {
+            Ok(cached_value)
+        } else {
+            let time_idx = self.shucks_client.get_time_idx()?;
+            self.cached_time_idx = Some(time_idx);
+            Ok(time_idx)
+        }
+    }
+
+    /// Invalidate the time index cache - call this after step, next, or continue
+    fn invalidate_time_idx_cache(&mut self) {
+        self.cached_time_idx = None;
+    }
+
     fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
         loop {
             terminal.draw(|f| self.ui(f))?;
@@ -271,7 +293,8 @@ impl App {
 
                             // Update fuzzy matches
                             if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker {
-                                let matches = wave_tracker.fuzzy_match_var(self.addsig_state.get_input());
+                                let matches =
+                                    wave_tracker.fuzzy_match_var(self.addsig_state.get_input());
                                 self.addsig_state.set_matches(matches);
                             }
                         }
@@ -283,7 +306,8 @@ impl App {
 
                             // Update fuzzy matches
                             if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker {
-                                let matches = wave_tracker.fuzzy_match_var(self.addsig_state.get_input());
+                                let matches =
+                                    wave_tracker.fuzzy_match_var(self.addsig_state.get_input());
                                 self.addsig_state.set_matches(matches);
                             }
                         }
@@ -296,7 +320,8 @@ impl App {
                         KeyCode::Enter => {
                             // Select the signal and exit addsig mode
                             if let Some((var, _)) = self.addsig_state.get_selected().cloned() {
-                                if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker {
+                                if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker
+                                {
                                     wave_tracker.select_signal(var);
                                 }
                             }
@@ -311,76 +336,78 @@ impl App {
                 } else {
                     // Normal key handling when not in addsig mode
                     match key.code {
-                    KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        // Ctrl+D: Quit the application
-                        self.should_quit = true;
-                    }
-                    KeyCode::Char('l') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        // Ctrl+L: Clear screen
-                        self.command_history.clear();
-                        self.scroll_offset = 0;
-                    }
-                    
-                    
-                    
-                    
-                    KeyCode::Char(c) => {
-                        self.input_buffer.push(c);
-                        // Reset history navigation when user types
-                        self.history_index = None;
-                    }
-                    KeyCode::Enter => {
-                        self.process_command();
-                        self.input_buffer.clear();
-                        // Auto-scroll to bottom when new command is entered
-                        self.scroll_offset = 0;
-                    }
-                    KeyCode::Backspace => {
-                        self.input_buffer.pop();
-                        // Reset history navigation when user modifies input
-                        self.history_index = None;
-                    }
-                    KeyCode::Up => {
-                        // Navigate to previous command in history
-                        if !self.user_command_history.is_empty() {
-                            let new_index = match self.history_index {
-                                None => self.user_command_history.len() - 1,
-                                Some(index) => {
-                                    if index > 0 {
-                                        index - 1
-                                    } else {
-                                        // Wrap to newest (end of history)
-                                        self.user_command_history.len() - 1
-                                    }
-                                }
-                            };
-                            self.history_index = Some(new_index);
-                            self.input_buffer = self.user_command_history[new_index].clone();
+                        KeyCode::Char('d')
+                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                        {
+                            // Ctrl+D: Quit the application
+                            self.should_quit = true;
                         }
-                    }
-                    KeyCode::Down => {
-                        // Navigate to next (more recent) command in history
-                        if !self.user_command_history.is_empty() {
-                            match self.history_index {
-                                None => {
-                                    // Do nothing if not currently navigating history
-                                }
-                                Some(index) => {
-                                    if index < self.user_command_history.len() - 1 {
-                                        let new_index = index + 1;
-                                        self.history_index = Some(new_index);
-                                        self.input_buffer =
-                                            self.user_command_history[new_index].clone();
-                                    } else {
-                                        // Wrap to oldest (beginning of history)
-                                        self.history_index = Some(0);
-                                        self.input_buffer = self.user_command_history[0].clone();
+                        KeyCode::Char('l')
+                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                        {
+                            // Ctrl+L: Clear screen
+                            self.command_history.clear();
+                            self.scroll_offset = 0;
+                        }
+
+                        KeyCode::Char(c) => {
+                            self.input_buffer.push(c);
+                            // Reset history navigation when user types
+                            self.history_index = None;
+                        }
+                        KeyCode::Enter => {
+                            self.process_command();
+                            self.input_buffer.clear();
+                            // Auto-scroll to bottom when new command is entered
+                            self.scroll_offset = 0;
+                        }
+                        KeyCode::Backspace => {
+                            self.input_buffer.pop();
+                            // Reset history navigation when user modifies input
+                            self.history_index = None;
+                        }
+                        KeyCode::Up => {
+                            // Navigate to previous command in history
+                            if !self.user_command_history.is_empty() {
+                                let new_index = match self.history_index {
+                                    None => self.user_command_history.len() - 1,
+                                    Some(index) => {
+                                        if index > 0 {
+                                            index - 1
+                                        } else {
+                                            // Wrap to newest (end of history)
+                                            self.user_command_history.len() - 1
+                                        }
+                                    }
+                                };
+                                self.history_index = Some(new_index);
+                                self.input_buffer = self.user_command_history[new_index].clone();
+                            }
+                        }
+                        KeyCode::Down => {
+                            // Navigate to next (more recent) command in history
+                            if !self.user_command_history.is_empty() {
+                                match self.history_index {
+                                    None => {
+                                        // Do nothing if not currently navigating history
+                                    }
+                                    Some(index) => {
+                                        if index < self.user_command_history.len() - 1 {
+                                            let new_index = index + 1;
+                                            self.history_index = Some(new_index);
+                                            self.input_buffer =
+                                                self.user_command_history[new_index].clone();
+                                        } else {
+                                            // Wrap to oldest (beginning of history)
+                                            self.history_index = Some(0);
+                                            self.input_buffer =
+                                                self.user_command_history[0].clone();
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    _ => {}
+                        _ => {}
                     }
                 }
             }
@@ -400,6 +427,8 @@ impl App {
         {
             self.command_history.push(format!("Error stepping: {e}"));
         }
+        // Invalidate cache since execution state changed
+        self.invalidate_time_idx_cache();
     }
 
     fn process_command(&mut self) {
@@ -681,14 +710,22 @@ impl App {
             .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
             .split(area);
 
-        // Split the top area horizontally: instructions (left) and source code (right)
+        // Split the top area horizontally: instructions (left), source code (middle), signals (right)
         let panel_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+            .constraints(
+                [
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(40),
+                ]
+                .as_ref(),
+            )
             .split(main_chunks[0]);
 
         self.render_instruction_pane(f, panel_chunks[0]);
         self.render_source_pane(f, panel_chunks[1]);
+        self.render_signal_panel(f, panel_chunks[2]);
         self.render_command_bar(f, main_chunks[1]);
     }
 
@@ -818,6 +855,72 @@ impl App {
         f.render_widget(source_panel, area);
     }
 
+    fn render_signal_panel(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
+        let mut signal_lines = Vec::new();
+
+        // Check if wave tracker is available
+        if self.shucks_client.wave_tracker.is_some() {
+            // Get current time index using cached version
+            match self.get_cached_time_idx() {
+                Ok(time_idx) => {
+                    // Now get the wave tracker reference
+                    if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker {
+                        let current_time = wave_tracker.get_current_time(time_idx as TimeTableIdx);
+                        signal_lines.push(format!("{} ps", current_time));
+                        signal_lines.push("".to_string()); // Empty line after time
+
+                        // Get signal names and values
+                        let signal_names = wave_tracker.get_signal_names();
+                        if signal_names.is_empty() {
+                            signal_lines.push("No signals selected".to_string());
+                            signal_lines.push("Use 'addsig' to add signals".to_string());
+                        } else {
+                            let signal_values = wave_tracker.get_values(time_idx as TimeTableIdx);
+
+                            // Display each signal with its value
+                            for (name, value) in signal_names.iter().zip(signal_values.iter()) {
+                                signal_lines.push(format!("{}: {}", name, value));
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    signal_lines.push(format!("Error getting time: {}", e));
+                }
+            }
+        } else {
+            signal_lines.push("no waves found".to_string());
+        }
+
+        let items: Vec<ListItem> = signal_lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let style = if i == 0 && line.ends_with(" ps") {
+                    // Time header - make it bold and colored
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else if line.starts_with("Error:") || line.starts_with("Error ") {
+                    Style::default().fg(Color::Red)
+                } else if line == "no waves found" || line == "No signals selected" {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(line.clone()).style(style)
+            })
+            .collect();
+
+        let signal_panel = List::new(items).block(
+            Block::default()
+                .borders(ratatui::widgets::Borders::ALL)
+                .title("Signals"),
+        );
+
+        f.render_widget(signal_panel, area);
+    }
+
     fn render_command_bar(&self, f: &mut Frame, area: ratatui::layout::Rect) {
         // Use shared component with compact history (show last 3 commands)
         self.render_command_input(f, area, false, 3);
@@ -890,7 +993,7 @@ impl App {
             .highlight_style(
                 Style::default()
                     .bg(Color::Blue)
-                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::BOLD),
             );
 
         f.render_widget(results_list, chunks[1]);
