@@ -1,4 +1,49 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
+
+/// Represents a parsed breakpoint argument
+#[derive(Debug, PartialEq)]
+pub enum BreakpointTarget {
+    Address(u32),
+    FileLine { file: PathBuf, line: u64 },
+}
+
+/// Parse a breakpoint argument into either an address or file:line format
+pub fn parse_breakpoint_arg(input: &str) -> Result<BreakpointTarget, String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err("breakpoint requires an address or file:line argument".to_string());
+    }
+
+    // Check if input is in file:line format
+    if let Some(colon_pos) = input.rfind(':') {
+        let file_part = &input[..colon_pos];
+        let line_part = &input[colon_pos + 1..];
+
+        // Try to parse the line number and ensure file part is not empty
+        if !file_part.is_empty() {
+            if let Ok(line_num) = line_part.parse::<u64>() {
+                // This looks like file:line format
+                return Ok(BreakpointTarget::FileLine {
+                    file: PathBuf::from(file_part),
+                    line: line_num,
+                });
+            }
+        }
+    }
+
+    // Try to parse as address (support both hex with 0x prefix and without)
+    let addr = if input.starts_with("0x") || input.starts_with("0X") {
+        u32::from_str_radix(&input[2..], 16)
+    } else {
+        u32::from_str_radix(input, 16)
+    };
+
+    match addr {
+        Ok(address) => Ok(BreakpointTarget::Address(address)),
+        Err(_) => Err(format!("Invalid breakpoint format: {}", input)),
+    }
+}
 
 /// All available commands in the jpdb debugger
 #[derive(Debug, Clone, Copy)]
@@ -82,20 +127,8 @@ impl UserCommand {
                 Ok(())
             }
             UserCommand::Breakpoint => {
-                let addr_str = args.trim();
-                if addr_str.is_empty() {
-                    return Err("breakpoint requires an address argument".to_string());
-                }
-
-                // Parse address (support both hex with 0x prefix and without)
-                let addr = if addr_str.starts_with("0x") || addr_str.starts_with("0X") {
-                    u32::from_str_radix(&addr_str[2..], 16)
-                } else {
-                    u32::from_str_radix(addr_str, 16)
-                };
-
-                match addr {
-                    Ok(address) => {
+                match parse_breakpoint_arg(args)? {
+                    BreakpointTarget::Address(address) => {
                         match app.shucks_client.set_breakpoint(address) {
                             Ok(()) => {
                                 app.command_history.push(format!("Breakpoint set at address 0x{:x}", address));
@@ -106,8 +139,28 @@ impl UserCommand {
                             }
                         }
                     }
-                    Err(_) => {
-                        Err(format!("Invalid address format: {}", addr_str))
+                    BreakpointTarget::FileLine { file, line } => {
+                        let file_str = file.to_string_lossy();
+                        match app.shucks_client.set_breakpoint_at_line(&file_str, line) {
+                            Ok(addresses) => {
+                                if addresses.len() == 1 {
+                                    app.command_history.push(format!(
+                                        "Breakpoint set at {}:{} (address 0x{:x})",
+                                        file_str, line, addresses[0]
+                                    ));
+                                } else {
+                                    app.command_history.push(format!(
+                                        "Breakpoint set at {}:{} ({} addresses: {})",
+                                        file_str, line, addresses.len(),
+                                        addresses.iter().map(|a| format!("0x{:x}", a)).collect::<Vec<_>>().join(", ")
+                                    ));
+                                }
+                                Ok(())
+                            }
+                            Err(e) => {
+                                Err(format!("Failed to set breakpoint at {}:{}: {}", file_str, line, e))
+                            }
+                        }
                     }
                 }
             }
@@ -171,7 +224,7 @@ impl UserCommand {
             UserCommand::Step => "Step one instruction (same as next)",
             UserCommand::Help => "Show help information",
             UserCommand::Clear => "Clear the screen",
-            UserCommand::Breakpoint => "Set a breakpoint at the specified address",
+            UserCommand::Breakpoint => "Set a breakpoint at the specified address or file:line",
             UserCommand::Continue => "Continue execution until breakpoint",
             UserCommand::Toggle => "Toggle split view (instructions | source code)",
         }
@@ -185,7 +238,7 @@ impl UserCommand {
             UserCommand::Step => "step",
             UserCommand::Help => "help [command]",
             UserCommand::Clear => "clear",
-            UserCommand::Breakpoint => "breakpoint <address>",
+            UserCommand::Breakpoint => "breakpoint <address|file:line>",
             UserCommand::Continue => "continue",
             UserCommand::Toggle => "toggle",
         }
@@ -199,7 +252,7 @@ impl UserCommand {
             UserCommand::Step => &["step", "s"],
             UserCommand::Help => &["help", "help next", "h quit"],
             UserCommand::Clear => &["clear", "cl"],
-            UserCommand::Breakpoint => &["breakpoint 0x1000", "b 1000", "b 0x8000"],
+            UserCommand::Breakpoint => &["breakpoint 0x1000", "b 1000", "b main.c:42", "b src/lib.rs:123"],
             UserCommand::Continue => &["continue", "c"],
             UserCommand::Toggle => &["toggle", "t"],
         }
@@ -255,6 +308,53 @@ impl CommandRegistry {
         } else {
             Err(format!("Unknown command: {name}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_breakpoint_arg_invalid_address() {
+        assert!(parse_breakpoint_arg("invalid").is_err());
+        assert!(parse_breakpoint_arg("gg").is_err());
+    }
+
+    #[test]
+    fn test_parse_breakpoint_arg_valid_address() {
+        assert_eq!(
+            parse_breakpoint_arg("0x1000").unwrap(),
+            BreakpointTarget::Address(0x1000)
+        );
+        assert_eq!(
+            parse_breakpoint_arg("ABCD").unwrap(),
+            BreakpointTarget::Address(0xABCD)
+        );
+    }
+
+    #[test]
+    fn test_parse_breakpoint_arg_invalid_file() {
+        assert!(parse_breakpoint_arg("file.c:invalid").is_err());
+        assert!(parse_breakpoint_arg(":42").is_err());
+    }
+
+    #[test]
+    fn test_parse_breakpoint_arg_valid_filepath_with_line() {
+        assert_eq!(
+            parse_breakpoint_arg("main.c:42").unwrap(),
+            BreakpointTarget::FileLine {
+                file: PathBuf::from("main.c"),
+                line: 42
+            }
+        );
+        assert_eq!(
+            parse_breakpoint_arg("src/lib.rs:123").unwrap(),
+            BreakpointTarget::FileLine {
+                file: PathBuf::from("src/lib.rs"),
+                line: 123
+            }
+        );
     }
 }
 

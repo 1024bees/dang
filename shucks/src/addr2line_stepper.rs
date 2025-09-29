@@ -19,8 +19,8 @@ pub struct SourceLine {
 /// addr2line logic holder
 pub struct Addr2lineStepper {
     ctx: addr2line::Context<gimli::EndianSlice<'static, gimli::RunTimeEndian>>,
+    dwarf: gimli::Dwarf<gimli::EndianSlice<'static, gimli::RunTimeEndian>>,
     load_bias: u64,
-    source_search_paths: Vec<PathBuf>,
     source_cache: Mutex<HashMap<PathBuf, Arc<Vec<String>>>>,
     path_cache: Mutex<HashMap<PathBuf, PathBuf>>, // Cache for search_for_path results
     _section_data: Vec<Box<[u8]>>,                // Keep section data alive
@@ -32,11 +32,7 @@ impl Addr2lineStepper {
     /// - `elf_bytes`: full ELF file bytes (with debug info, or at least .debug_line)
     /// - `load_bias`: runtime_base - min_p_vaddr (0 for ET_EXEC; PIE/DSOs: compute at load time)
     /// - `source_search_paths`: optional source search paths -- files with relative paths will be searched for in these paths
-    pub fn new(
-        elf_bytes: &[u8],
-        load_bias: u64,
-        source_search_paths: Vec<PathBuf>,
-    ) -> Result<Self> {
+    pub fn new(elf_bytes: &[u8], load_bias: u64) -> Result<Self> {
         let obj = object::File::parse(elf_bytes)?;
         let endian = if obj.is_little_endian() {
             gimli::RunTimeEndian::Little
@@ -97,13 +93,15 @@ impl Addr2lineStepper {
                 .unwrap_or_else(|| gimli::EndianSlice::new(&[], endian)))
         };
 
-        let dwarf_cow = gimli::Dwarf::load(load_section)?;
-        let ctx = addr2line::Context::from_dwarf(dwarf_cow)?;
+        // Build two Dwarf views: one for addr2line Context, one we keep for direct parsing.
+        let dwarf = gimli::Dwarf::load(load_section)?;
+        let ctx = addr2line::Context::from_dwarf(gimli::Dwarf::load(load_section)?)?;
 
         Ok(Self {
             ctx,
+            dwarf,
             load_bias,
-            source_search_paths, // Fix: was path_subst
+
             source_cache: Mutex::new(HashMap::new()),
             path_cache: Mutex::new(HashMap::new()), // Initialize the path cache
             _section_data: section_data,
@@ -120,6 +118,83 @@ impl Addr2lineStepper {
             })),
             None => Ok(None),
         }
+    }
+
+    /// Find addresses that correspond to a specific source file and line number.
+    /// Returns a vector of runtime addresses that map to the given file:line.
+    pub fn find_addresses_for_line(&self, file_path: &Path, target_line: u64) -> Result<Vec<u64>> {
+        let mut addrs = Vec::new();
+
+        let inp_file = file_path.to_path_buf();
+        let is_absolute = inp_file.is_absolute();
+
+        let dwarf = &self.dwarf;
+
+        let mut units = dwarf.units();
+        while let Some(header) = units.next()? {
+            let unit = dwarf.unit(header)?;
+            let mut programs = unit.line_program.as_ref().map(|lp| lp.clone());
+
+            if let Some(ref mut program) = programs {
+                let mut rows = program.clone().rows();
+                while let Some((header, row)) = rows.next_row()? {
+                    if row.end_sequence() {
+                        continue;
+                    }
+
+                    // Line number
+                    let row_line = match row.line() {
+                        Some(l) => l.get() as u64,
+                        None => continue,
+                    };
+                    if row_line != target_line {
+                        continue;
+                    }
+
+                    // Resolve file path for this row
+                    let file_entry = match row.file(header) {
+                        Some(f) => f,
+                        None => continue,
+                    };
+
+                    // Resolve file name
+                    let file_name_ls = file_entry.path_name();
+                    let file_name_cow = dwarf.attr_string(&unit, file_name_ls)?;
+                    let file_name = std::str::from_utf8(&file_name_cow).unwrap_or_default();
+
+                    // Resolve directory (if present)
+                    let full_path = if let Some(dir_ls) = file_entry.directory(header) {
+                        let dir_cow = dwarf.attr_string(&unit, dir_ls)?;
+                        let dir_str = std::str::from_utf8(&dir_cow).unwrap_or_default();
+                        let mut p = PathBuf::from(dir_str);
+                        p.push(file_name);
+                        p
+                    } else {
+                        PathBuf::from(file_name)
+                    };
+
+                    // Normalize path according to source search paths
+                    let resolved = full_path;
+
+                    // match logic is basically -- if input path is absolute, match against the input path
+                    // otherwise, match against the input path as a suffix. e.g. main.c:12 should Just Work
+                    // FIXME: we dont handle multiple matches, e.g. if there are two files named main.c in the search paths, we're cooked
+                    if is_absolute && resolved == inp_file
+                        || !is_absolute && resolved.ends_with(&inp_file)
+                    {
+                        let file_addr = row.address();
+                        let runtime_addr = file_addr.saturating_add(self.load_bias);
+                        addrs.push(runtime_addr);
+                    }
+                }
+            }
+        }
+
+        // Remove duplicates and sort
+        addrs.sort_unstable();
+        addrs.dedup();
+
+        Ok(addrs)
     }
 
     /// Return the next `n` **unique** source lines *after* `runtime_pc`, using your
@@ -181,42 +256,11 @@ impl Addr2lineStepper {
         let file_addr = runtime_addr.saturating_sub(self.load_bias);
         if let Some(loc) = self.ctx.find_location(file_addr)? {
             if let (Some(file), Some(line)) = (loc.file, loc.line) {
-                let path = self.search_for_path(&PathBuf::from(file));
+                let path = PathBuf::from(file);
                 return Ok(Some((path, line as u64)));
             }
         }
         Ok(None)
-    }
-
-    fn search_for_path(&self, original: &Path) -> PathBuf {
-        // Check cache first
-        if let Ok(mut cache) = self.path_cache.lock() {
-            if let Some(cached_path) = cache.get(original) {
-                return cached_path.clone();
-            }
-        }
-
-        // Original logic
-        let result = if original.is_absolute() {
-            original.to_path_buf()
-        } else {
-            let mut found_path = None;
-            for base in &self.source_search_paths {
-                let path = base.join(original);
-                if path.exists() {
-                    found_path = Some(path);
-                    break;
-                }
-            }
-            found_path.unwrap_or_else(|| original.to_path_buf())
-        };
-
-        // Cache the result
-        if let Ok(mut cache) = self.path_cache.lock() {
-            cache.insert(original.to_path_buf(), result.clone());
-        }
-
-        result
     }
 
     fn read_line_1_based(&self, path: &Path, line_1: usize) -> Option<String> {
@@ -239,6 +283,46 @@ impl Addr2lineStepper {
         };
         arc.get(line_1.saturating_sub(1)).cloned()
     }
+
+    pub fn list_dwarf_files(&self) -> Result<Vec<PathBuf>> {
+        let dwarf = &self.dwarf;
+        let mut files: Vec<PathBuf> = Vec::new();
+
+        let mut units = dwarf.units();
+        while let Some(header) = units.next()? {
+            let unit = dwarf.unit(header)?;
+            if let Some(ref program) = unit.line_program {
+                let header = program.header();
+
+                // Collect file table entries from the line program header
+                for file_entry in header.file_names() {
+                    // File name
+                    let name_ls = file_entry.path_name();
+                    let name_cow = dwarf.attr_string(&unit, name_ls)?;
+                    let name = std::str::from_utf8(&name_cow).unwrap_or_default();
+
+                    // Directory (if present)
+                    let full_path = if let Some(dir_ls) = file_entry.directory(header) {
+                        let dir_cow = dwarf.attr_string(&unit, dir_ls)?;
+                        let dir_str = std::str::from_utf8(&dir_cow).unwrap_or_default();
+                        let mut p = PathBuf::from(dir_str);
+                        p.push(name);
+                        p
+                    } else {
+                        PathBuf::from(name)
+                    };
+
+                    // Normalize via configured source search paths
+                    files.push(full_path);
+                }
+            }
+        }
+
+        // Sort and de-duplicate
+        files.sort();
+        files.dedup();
+        Ok(files)
+    }
 }
 
 #[cfg(test)]
@@ -253,13 +337,13 @@ mod tests {
             .expect("Failed to get workspace root")
             .to_path_buf();
         let elf_path = workspace_root.join("test_data/ibex/hello_test.elf");
-        let source_search_paths = vec![workspace_root.join("test_data/ibex")];
+
         let elf_bytes = std::fs::read(&elf_path).map_err(|e| {
             anyhow::anyhow!("Failed to read ELF file {}: {}", elf_path.display(), e)
         })?;
 
         // Create stepper with no load bias (statically linked executable) and no path substitutions
-        let stepper = Addr2lineStepper::new(&elf_bytes, 0, source_search_paths)?;
+        let stepper = Addr2lineStepper::new(&elf_bytes, 0)?;
 
         // Test with some addresses that should be in the binary
         // Based on objdump: .text section is at 0x00100084
@@ -304,6 +388,75 @@ mod tests {
                 println!("  {}:{} - {:?}", line.path.display(), line.line, line.text);
             }
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_addresses_for_line_hello_test() -> Result<()> {
+        // Load the test ELF file - go up one directory from crate root to workspace root
+        let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Failed to get workspace root")
+            .to_path_buf();
+        let elf_path = workspace_root.join("test_data/ibex/hello_test.elf");
+        let source_search_paths = vec![workspace_root.join("test_data/ibex/test_source")];
+        let elf_bytes = std::fs::read(&elf_path).map_err(|e| {
+            anyhow::anyhow!("Failed to read ELF file {}: {}", elf_path.display(), e)
+        })?;
+
+        let stepper = Addr2lineStepper::new(&elf_bytes, 0)?;
+        let target_path = PathBuf::from("hello_test.c");
+
+        // Pick lines that should generate code: puts/puthex/putchar lines (1-based)
+        for &line in &[12u64, 13u64, 16u64] {
+            let addrs = stepper.find_addresses_for_line(&target_path, line)?;
+            assert!(
+                !addrs.is_empty(),
+                "Expected at least one address for {}:{}",
+                target_path.display(),
+                line
+            );
+
+            // Validate that the addresses round-trip back to the same file:line
+            for &addr in addrs.iter().take(4) {
+                let src = stepper
+                    .current_line(addr)?
+                    .expect("Resolved address should have source info");
+
+                assert!(
+                    src.path.ends_with(target_path.as_path()),
+                    "Round-trip path mismatch for addr 0x{:x}",
+                    addr
+                );
+                assert_eq!(
+                    src.line, line,
+                    "Round-trip line mismatch for addr 0x{:x}",
+                    addr
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_dwarf_files() -> Result<()> {
+        // Load the test ELF file - go up one directory from crate root to workspace root
+        let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Failed to get workspace root")
+            .to_path_buf();
+        let elf_path = workspace_root.join("test_data/ibex/hello_test.elf");
+
+        let elf_bytes = std::fs::read(&elf_path).map_err(|e| {
+            anyhow::anyhow!("Failed to read ELF file {}: {}", elf_path.display(), e)
+        })?;
+
+        let stepper = Addr2lineStepper::new(&elf_bytes, 0)?;
+
+        let files = stepper.list_dwarf_files()?;
+        assert!(files.iter().any(|p| p.ends_with("hello_test.c")));
 
         Ok(())
     }

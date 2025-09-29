@@ -137,12 +137,6 @@ impl Default for App {
         let _ = shucks_client.load_elf_info();
 
         thread::sleep(Duration::from_millis(300));
-        //let pc = shucks_client
-        //    .get_current_pc()
-        //    .expect("Couldnt find intial PC from the waveforms -- was there an issue?");
-        //let instructions = shucks_client
-        //    .get_current_and_next_inst()
-        //    .unwrap_or(Vec::new());
 
         let mut app = App {
             should_quit: false,
@@ -298,15 +292,13 @@ impl App {
                         }
                     }
                 } else {
-                    self.command_history.push(format!(
-                        "->  0x{current_pc}: <unable to get instructions>"
-                    ));
+                    self.command_history
+                        .push(format!("->  0x{current_pc}: <unable to get instructions>"));
                 }
             }
             Err(e) => {
                 log::error!("Failed to get current PC: {e}");
-                self.command_history
-                    .push(format!("Error getting PC: {e}"));
+                self.command_history.push(format!("Error getting PC: {e}"));
             }
         }
 
@@ -497,11 +489,15 @@ impl App {
         // Get current source line
         match self.shucks_client.get_current_source_line() {
             Ok(Some(current_line)) => {
-                source_lines.push(format!("{}:{}",
-                    current_line.path.file_name()
+                source_lines.push(format!(
+                    "{}:{}",
+                    current_line
+                        .path
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("unknown"),
-                    current_line.line));
+                    current_line.line
+                ));
                 source_lines.push("".to_string());
 
                 // Show current line with arrow
@@ -518,7 +514,8 @@ impl App {
                             if let Some(ref text) = line.text {
                                 source_lines.push(format!("   {}: {}", line.line, text));
                             } else {
-                                source_lines.push(format!("   {}: <source not available>", line.line));
+                                source_lines
+                                    .push(format!("   {}: <source not available>", line.line));
                             }
                         }
                     }
@@ -569,7 +566,7 @@ impl App {
         let command_items = vec![ListItem::new(prompt_text).style(
             Style::default()
                 .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::BOLD),
         )];
 
         let command_panel = List::new(command_items).block(

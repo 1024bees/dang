@@ -601,7 +601,7 @@ impl Client {
         let elf_path = self.get_executable_path()?;
         let elf_data = fs::read(&elf_path)?;
         self.parse_elf_file(&elf_data)?;
-        self.addr2line_stepper = Addr2lineStepper::new(&elf_data, 0, Vec::new()).ok();
+        self.addr2line_stepper = Addr2lineStepper::new(&elf_data, 0).ok();
         Ok(())
     }
 
@@ -739,8 +739,50 @@ impl Client {
         }
     }
 
+    /// Set a breakpoint at the specified file and line number
+    pub fn set_breakpoint_at_line(
+        &mut self,
+        file_path: &str,
+        line: u64,
+    ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        if let Some(ref stepper) = self.addr2line_stepper {
+            let path = std::path::Path::new(file_path);
+            let addresses = stepper.find_addresses_for_line(path, line)?;
+
+            if addresses.is_empty() {
+                return Err(format!("No executable code found for {}:{}", file_path, line).into());
+            }
+
+            let mut set_addresses = Vec::new();
+            for &addr in &addresses {
+                // Convert u64 to u32 (assuming 32-bit addresses for now)
+                let addr32 = addr as u32;
+                match self.set_breakpoint(addr32) {
+                    Ok(()) => set_addresses.push(addr32),
+                    Err(e) => {
+                        // If we fail to set a breakpoint, remove any we've already set and return error
+                        for &cleanup_addr in &set_addresses {
+                            let _ = self.remove_breakpoint(cleanup_addr);
+                        }
+                        return Err(format!(
+                            "Failed to set breakpoint at address 0x{:x}: {}",
+                            addr32, e
+                        )
+                        .into());
+                    }
+                }
+            }
+
+            Ok(set_addresses)
+        } else {
+            Err("No debug information available - unable to resolve file:line to address".into())
+        }
+    }
+
     /// Get the current source line for the current PC
-    pub fn get_current_source_line(&mut self) -> Result<Option<crate::addr2line_stepper::SourceLine>, Box<dyn std::error::Error>> {
+    pub fn get_current_source_line(
+        &mut self,
+    ) -> Result<Option<crate::addr2line_stepper::SourceLine>, Box<dyn std::error::Error>> {
         let pc = self.get_current_pc()?;
         if let Some(ref stepper) = self.addr2line_stepper {
             Ok(stepper.current_line(pc.as_u64())?)
@@ -750,7 +792,10 @@ impl Client {
     }
 
     /// Get the next 3 source lines after the current PC using upcoming instruction addresses
-    pub fn get_next_source_lines(&mut self, count: usize) -> Result<Vec<crate::addr2line_stepper::SourceLine>, Box<dyn std::error::Error>> {
+    pub fn get_next_source_lines(
+        &mut self,
+        count: usize,
+    ) -> Result<Vec<crate::addr2line_stepper::SourceLine>, Box<dyn std::error::Error>> {
         let pc = self.get_current_pc()?;
         let instructions = self.get_current_and_next_inst()?;
 
