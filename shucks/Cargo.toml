@@ -18,11 +18,12 @@ goblin = "0.10"
 anyhow = { workspace = true }
 object = { workspace = true }
 addr2line = { workspace = true }
+
+dang = { path = "../dang" }
+
 gimli = "0.31"
 
 log = { workspace = true }
 
 env_logger = { workspace = true }
-
-[dev-dependencies]
-dang = { path = "../dang" }
+nucleo-matcher = "0.3.1"

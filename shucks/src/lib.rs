@@ -5,9 +5,10 @@ pub mod client;
 pub mod commands;
 pub mod packet;
 pub mod response;
+mod wavetracker;
 
-pub use client::Client;
 pub use addr2line_stepper::SourceLine;
+pub use client::Client;
 use commands::{Base, GdbCommand};
 use packet::FinishedPacket;
 

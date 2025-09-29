@@ -416,23 +416,26 @@ impl App {
         f.render_widget(instruction_panel, area);
     }
 
-    fn render_command_area(&self, f: &mut Frame, area: ratatui::layout::Rect) {
-        // Combine command history with the current prompt
-        let mut all_lines: Vec<String> = self.command_history.clone();
+    fn render_command_input(&self, f: &mut Frame, area: ratatui::layout::Rect, show_full_history: bool, history_lines: usize) {
+        let mut all_lines: Vec<String> = if show_full_history {
+            // Show full command history for non-split view
+            self.command_history.clone()
+        } else {
+            // Show only recent history for split view
+            let start_idx = self.command_history.len().saturating_sub(history_lines);
+            self.command_history[start_idx..].to_vec()
+        };
 
         // Add the current prompt line
         let prompt_text = format!("(jpdb) {}", self.input_buffer);
         all_lines.push(prompt_text);
 
         // Calculate how many lines can fit in the terminal
-        let available_height = area.height as usize;
+        let available_height = area.height.saturating_sub(2) as usize; // Account for borders
         let total_lines = all_lines.len();
 
-        // Determine which lines to show based on scroll offset
-        let visible_lines = if total_lines <= available_height {
-            // All lines fit, show everything
-            all_lines
-        } else {
+        // Determine which lines to show based on scroll offset (only for full history mode)
+        let visible_lines = if show_full_history && total_lines > available_height {
             // Need to scroll - calculate the start index
             let max_scroll = total_lines.saturating_sub(available_height);
             let actual_scroll = self.scroll_offset.min(max_scroll);
@@ -440,6 +443,10 @@ impl App {
             let end_idx = start_idx + available_height;
 
             all_lines[start_idx..end_idx.min(total_lines)].to_vec()
+        } else {
+            // For split view or when all lines fit, show from the end
+            let start_idx = total_lines.saturating_sub(available_height);
+            all_lines[start_idx..].to_vec()
         };
 
         let items: Vec<ListItem> = visible_lines
@@ -458,13 +465,19 @@ impl App {
             })
             .collect();
 
+        let title = if show_full_history { "Command History" } else { "Command" };
         let command_area = List::new(items).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Command History"),
+                .title(title),
         );
 
         f.render_widget(command_area, area);
+    }
+
+    fn render_command_area(&self, f: &mut Frame, area: ratatui::layout::Rect) {
+        // Use shared component with full history display
+        self.render_command_input(f, area, true, 0);
     }
 
     fn render_debug_panel(&self, f: &mut Frame, area: ratatui::layout::Rect) {
@@ -650,22 +663,8 @@ impl App {
     }
 
     fn render_command_bar(&self, f: &mut Frame, area: ratatui::layout::Rect) {
-        // Create command input area
-        let prompt_text = format!("(jpdb) {}", self.input_buffer);
-
-        let command_items = vec![ListItem::new(prompt_text).style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )];
-
-        let command_panel = List::new(command_items).block(
-            Block::default()
-                .borders(ratatui::widgets::Borders::ALL)
-                .title("Command"),
-        );
-
-        f.render_widget(command_panel, area);
+        // Use shared component with compact history (show last 3 commands)
+        self.render_command_input(f, area, false, 3);
     }
 }
 
