@@ -22,7 +22,7 @@ pub struct Client {
     response_buffer: Vec<u8>,
     elf_info: Option<ElfInfo>,
     addr2line_stepper: Option<Addr2lineStepper>,
-    wave_tracker: Option<WaveformTracker>,
+    pub wave_tracker: Option<WaveformTracker>,
 }
 
 #[derive(Copy, Clone)]

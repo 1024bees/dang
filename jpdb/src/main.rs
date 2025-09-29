@@ -18,14 +18,14 @@ use crossterm::{
 
 use ratatui::{
     backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem},
     Frame, Terminal,
 };
 use shucks::{
     commands::{GdbCommand, Resume},
-    Client, Packet,
+    Client, Packet, Var,
 };
 
 // Custom logger that captures messages for ratatui display
@@ -78,6 +78,84 @@ impl log::Log for AppLogger {
     fn flush(&self) {}
 }
 
+pub struct AddsigState {
+    active: bool,
+    input: String,
+    matches: Vec<(Var, String)>,
+    selected_index: usize,
+}
+
+impl AddsigState {
+    pub fn new() -> Self {
+        Self {
+            active: false,
+            input: String::new(),
+            matches: Vec::new(),
+            selected_index: 0,
+        }
+    }
+
+    pub fn activate(&mut self) {
+        self.active = true;
+        self.input.clear();
+        self.matches.clear();
+        self.selected_index = 0;
+    }
+
+    pub fn deactivate(&mut self) {
+        self.active = false;
+        self.input.clear();
+        self.matches.clear();
+        self.selected_index = 0;
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub fn update_search(&mut self, input: String) {
+        self.input = input;
+        self.selected_index = 0; // Reset selection when search changes
+    }
+
+    pub fn get_input(&self) -> &str {
+        &self.input
+    }
+
+    pub fn set_matches(&mut self, matches: Vec<(Var, String)>) {
+        self.matches = matches.into_iter().take(10).collect(); // Take top 10
+        self.selected_index = self.selected_index.min(self.matches.len().saturating_sub(1));
+    }
+
+    pub fn get_matches(&self) -> &[(Var, String)] {
+        &self.matches
+    }
+
+    pub fn select_next(&mut self) {
+        if !self.matches.is_empty() {
+            self.selected_index = (self.selected_index + 1) % self.matches.len();
+        }
+    }
+
+    pub fn select_prev(&mut self) {
+        if !self.matches.is_empty() {
+            self.selected_index = if self.selected_index == 0 {
+                self.matches.len() - 1
+            } else {
+                self.selected_index - 1
+            };
+        }
+    }
+
+    pub fn get_selected(&self) -> Option<&(Var, String)> {
+        self.matches.get(self.selected_index)
+    }
+
+    pub fn get_selected_index(&self) -> usize {
+        self.selected_index
+    }
+}
+
 pub struct App {
     pub should_quit: bool,
 
@@ -97,6 +175,8 @@ pub struct App {
     // Command history navigation
     user_command_history: Vec<String>,
     history_index: Option<usize>,
+    // Addsig floating window state
+    addsig_state: AddsigState,
 }
 
 impl Default for App {
@@ -164,6 +244,7 @@ impl Default for App {
             last_command: None,
             user_command_history: Vec::new(),
             history_index: None,
+            addsig_state: AddsigState::new(),
         };
 
         // Show initial instructions when first connecting
@@ -179,7 +260,57 @@ impl App {
             terminal.draw(|f| self.ui(f))?;
 
             if let Event::Key(key) = event::read()? {
-                match key.code {
+                // Check if we're in addsig mode first
+                if self.addsig_state.is_active() {
+                    match key.code {
+                        KeyCode::Char(c) => {
+                            // Add character to search input
+                            let mut new_input = self.addsig_state.get_input().to_string();
+                            new_input.push(c);
+                            self.addsig_state.update_search(new_input);
+
+                            // Update fuzzy matches
+                            if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker {
+                                let matches = wave_tracker.fuzzy_match_var(self.addsig_state.get_input());
+                                self.addsig_state.set_matches(matches);
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            // Remove character from search input
+                            let mut new_input = self.addsig_state.get_input().to_string();
+                            new_input.pop();
+                            self.addsig_state.update_search(new_input);
+
+                            // Update fuzzy matches
+                            if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker {
+                                let matches = wave_tracker.fuzzy_match_var(self.addsig_state.get_input());
+                                self.addsig_state.set_matches(matches);
+                            }
+                        }
+                        KeyCode::Up => {
+                            self.addsig_state.select_prev();
+                        }
+                        KeyCode::Down => {
+                            self.addsig_state.select_next();
+                        }
+                        KeyCode::Enter => {
+                            // Select the signal and exit addsig mode
+                            if let Some((var, _)) = self.addsig_state.get_selected().cloned() {
+                                if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker {
+                                    wave_tracker.select_signal(var);
+                                }
+                            }
+                            self.addsig_state.deactivate();
+                        }
+                        KeyCode::Esc => {
+                            // Exit addsig mode without selection
+                            self.addsig_state.deactivate();
+                        }
+                        _ => {} // Ignore other keys in addsig mode
+                    }
+                } else {
+                    // Normal key handling when not in addsig mode
+                    match key.code {
                     KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                         // Ctrl+D: Quit the application
                         self.should_quit = true;
@@ -189,10 +320,10 @@ impl App {
                         self.command_history.clear();
                         self.scroll_offset = 0;
                     }
-                    KeyCode::Char('d') => {
-                        // Toggle debug panel
-                        self.show_debug_panel = !self.show_debug_panel;
-                    }
+                    
+                    
+                    
+                    
                     KeyCode::Char(c) => {
                         self.input_buffer.push(c);
                         // Reset history navigation when user types
@@ -250,6 +381,7 @@ impl App {
                         }
                     }
                     _ => {}
+                    }
                 }
             }
 
@@ -384,6 +516,11 @@ impl App {
         } else {
             // Render everything as one continuous output with prompt at the end
             self.render_combined_output(f, f.area());
+        }
+
+        // Render addsig popup on top if active
+        if self.addsig_state.is_active() {
+            self.render_addsig_popup(f, f.area());
         }
     }
 
@@ -684,6 +821,91 @@ impl App {
     fn render_command_bar(&self, f: &mut Frame, area: ratatui::layout::Rect) {
         // Use shared component with compact history (show last 3 commands)
         self.render_command_input(f, area, false, 3);
+    }
+
+    fn render_addsig_popup(&self, f: &mut Frame, area: ratatui::layout::Rect) {
+        use ratatui::layout::Alignment;
+        use ratatui::widgets::{Clear, Paragraph};
+
+        // Calculate popup size and position (centered, 60% width, 50% height)
+        let popup_area = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(25), // Top margin
+                Constraint::Percentage(50), // Popup height
+                Constraint::Percentage(25), // Bottom margin
+            ])
+            .split(area)[1];
+
+        let popup_area = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(20), // Left margin
+                Constraint::Percentage(60), // Popup width
+                Constraint::Percentage(20), // Right margin
+            ])
+            .split(popup_area)[1];
+
+        // Clear the background
+        f.render_widget(Clear, popup_area);
+
+        // Split popup into search input and results
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Search input
+                Constraint::Min(0),    // Results
+            ])
+            .split(popup_area);
+
+        // Render search input
+        let input_text = format!("Search: {}", self.addsig_state.get_input());
+        let input_paragraph = Paragraph::new(input_text)
+            .block(Block::default().borders(Borders::ALL).title("Add Signal"))
+            .alignment(Alignment::Left);
+        f.render_widget(input_paragraph, chunks[0]);
+
+        // Render search results
+        let matches = self.addsig_state.get_matches();
+        let selected_index = self.addsig_state.get_selected_index();
+
+        let items: Vec<ListItem> = matches
+            .iter()
+            .enumerate()
+            .map(|(i, (_, signal_name))| {
+                let style = if i == selected_index {
+                    Style::default()
+                        .bg(Color::Blue)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(signal_name.clone()).style(style)
+            })
+            .collect();
+
+        let results_list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title("Signals"))
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Blue)
+                    .add_modifier(Modifier::BOLD)
+            );
+
+        f.render_widget(results_list, chunks[1]);
+
+        // Add help text at the bottom
+        let help_area = Rect {
+            x: popup_area.x,
+            y: popup_area.y + popup_area.height,
+            width: popup_area.width,
+            height: 1,
+        };
+        let help_text = Paragraph::new("↑↓: Navigate | Enter: Select | Esc: Cancel")
+            .style(Style::default().fg(Color::Gray))
+            .alignment(Alignment::Center);
+        f.render_widget(help_text, help_area);
     }
 }
 

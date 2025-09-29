@@ -56,6 +56,7 @@ pub enum UserCommand {
     Breakpoint,
     Continue,
     Toggle,
+    Addsig,
 }
 
 impl UserCommand {
@@ -185,6 +186,10 @@ impl UserCommand {
                 }
                 Ok(())
             }
+            UserCommand::Addsig => {
+                app.addsig_state.activate();
+                Ok(())
+            }
         }
     }
 
@@ -199,6 +204,7 @@ impl UserCommand {
             UserCommand::Breakpoint => "breakpoint",
             UserCommand::Continue => "continue",
             UserCommand::Toggle => "toggle",
+            UserCommand::Addsig => "addsig",
         }
     }
 
@@ -213,6 +219,7 @@ impl UserCommand {
             UserCommand::Breakpoint => &["breakpoint", "b"],
             UserCommand::Continue => &["continue", "c"],
             UserCommand::Toggle => &["toggle", "t"],
+            UserCommand::Addsig => &["addsig", "as"],
         }
     }
 
@@ -227,6 +234,7 @@ impl UserCommand {
             UserCommand::Breakpoint => "Set a breakpoint at the specified address or file:line",
             UserCommand::Continue => "Continue execution until breakpoint",
             UserCommand::Toggle => "Toggle split view (instructions | source code)",
+            UserCommand::Addsig => "Open floating window to add signal via fuzzy search",
         }
     }
 
@@ -241,6 +249,7 @@ impl UserCommand {
             UserCommand::Breakpoint => "breakpoint <address|file:line>",
             UserCommand::Continue => "continue",
             UserCommand::Toggle => "toggle",
+            UserCommand::Addsig => "addsig",
         }
     }
 
@@ -255,6 +264,7 @@ impl UserCommand {
             UserCommand::Breakpoint => &["breakpoint 0x1000", "b 1000", "b main.c:42", "b src/lib.rs:123"],
             UserCommand::Continue => &["continue", "c"],
             UserCommand::Toggle => &["toggle", "t"],
+            UserCommand::Addsig => &["addsig", "as"],
         }
     }
 
@@ -269,6 +279,7 @@ impl UserCommand {
             UserCommand::Breakpoint,
             UserCommand::Continue,
             UserCommand::Toggle,
+            UserCommand::Addsig,
         ]
     }
 }

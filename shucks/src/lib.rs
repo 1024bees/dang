@@ -9,6 +9,7 @@ mod wavetracker;
 
 pub use addr2line_stepper::SourceLine;
 pub use client::Client;
+pub use wellen::Var;
 use commands::{Base, GdbCommand};
 use packet::FinishedPacket;
 
