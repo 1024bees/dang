@@ -74,9 +74,7 @@ impl MonitorCmd for Waver {
         cmd: &[u8],
         mut out: ConsoleOutput<'_>,
     ) -> Result<(), Self::Error> {
-        log::info!(
-            "DANG SERVER: Received monitor command (QRcmd) with raw bytes: {cmd:?}"
-        );
+        log::info!("DANG SERVER: Received monitor command (QRcmd) with raw bytes: {cmd:?}");
         let cmd = match core::str::from_utf8(cmd) {
             Ok(cmd) => cmd,
             Err(_) => {

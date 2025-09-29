@@ -2,12 +2,14 @@ use std::{
     fs,
     io::{Read, Write},
     net::TcpStream,
+    path::PathBuf,
 };
 
 use crate::{
     addr2line_stepper::Addr2lineStepper,
     commands::{Base, GdbCommand},
     response::{GdbResponse, RawGdbResponse},
+    wavetracker::WaveformTracker,
     Packet,
 };
 use goblin::elf::Elf;
@@ -20,6 +22,7 @@ pub struct Client {
     response_buffer: Vec<u8>,
     elf_info: Option<ElfInfo>,
     addr2line_stepper: Option<Addr2lineStepper>,
+    wave_tracker: Option<WaveformTracker>,
 }
 
 #[derive(Copy, Clone)]
@@ -133,6 +136,7 @@ impl Client {
             packet_scratch: [0; 4096],
             elf_info: None,
             addr2line_stepper: None,
+            wave_tracker: None,
             response_buffer: Vec::new(),
         }
     }
@@ -602,6 +606,11 @@ impl Client {
         let elf_data = fs::read(&elf_path)?;
         self.parse_elf_file(&elf_data)?;
         self.addr2line_stepper = Addr2lineStepper::new(&elf_data, 0).ok();
+        Ok(())
+    }
+
+    pub fn load_waveform(&mut self, wave_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+        self.wave_tracker = Some(WaveformTracker::new(wave_path)?);
         Ok(())
     }
 

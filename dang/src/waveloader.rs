@@ -202,6 +202,8 @@ pub enum MappingParsedEvents {
     },
 }
 
+pub struct WellenPayload {}
+
 pub struct ValidationResult {
     /// If None, it failed
     pub signals: Option<HashMap<String, wellen::Signal>>,

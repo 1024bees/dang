@@ -135,6 +135,15 @@ impl Default for App {
 
         // Create shucks client connected to dang
         let mut shucks_client = Client::new_with_port(port);
+        let workspace_root = std::env::current_dir()
+            .expect("Failed to get current dir")
+            .parent()
+            .expect("Failed to get parent dir")
+            .to_path_buf();
+        let wave_path = workspace_root.join("test_data/ibex/sim.fst");
+        shucks_client
+            .load_waveform(wave_path)
+            .expect("Failed to load waveform");
 
         shucks_client.initialize_gdb_session().expect("");
         let _ = shucks_client.load_elf_info();
@@ -310,7 +319,8 @@ impl App {
     pub fn add_execution_info(&mut self) {
         log::debug!("Adding execution info");
         self.instruction_output.clear(); // Clear previous instruction output
-        self.instruction_output.push("Process 1 stopped".to_string());
+        self.instruction_output
+            .push("Process 1 stopped".to_string());
         self.instruction_output
             .push("* thread #1, stop reason = instruction step over".to_string());
 
@@ -345,7 +355,8 @@ impl App {
             }
             Err(e) => {
                 log::error!("Failed to get current PC: {e}");
-                self.instruction_output.push(format!("Error getting PC: {e}"));
+                self.instruction_output
+                    .push(format!("Error getting PC: {e}"));
             }
         }
 
@@ -391,7 +402,8 @@ impl App {
     }
 
     fn render_instruction_panel_combined(&self, f: &mut Frame, area: ratatui::layout::Rect) {
-        let items: Vec<ListItem> = self.instruction_output
+        let items: Vec<ListItem> = self
+            .instruction_output
             .iter()
             .map(|line| {
                 let style = if line.starts_with("->") {
@@ -416,7 +428,13 @@ impl App {
         f.render_widget(instruction_panel, area);
     }
 
-    fn render_command_input(&self, f: &mut Frame, area: ratatui::layout::Rect, show_full_history: bool, history_lines: usize) {
+    fn render_command_input(
+        &self,
+        f: &mut Frame,
+        area: ratatui::layout::Rect,
+        show_full_history: bool,
+        history_lines: usize,
+    ) {
         let mut all_lines: Vec<String> = if show_full_history {
             // Show full command history for non-split view
             self.command_history.clone()
@@ -465,12 +483,13 @@ impl App {
             })
             .collect();
 
-        let title = if show_full_history { "Command History" } else { "Command" };
-        let command_area = List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title),
-        );
+        let title = if show_full_history {
+            "Command History"
+        } else {
+            "Command"
+        };
+        let command_area =
+            List::new(items).block(Block::default().borders(Borders::ALL).title(title));
 
         f.render_widget(command_area, area);
     }
