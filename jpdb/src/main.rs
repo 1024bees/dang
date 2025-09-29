@@ -94,6 +94,9 @@ pub struct App {
     log_buffer: Arc<Mutex<VecDeque<LogMessage>>>,
     // Last executed command for repeat functionality
     last_command: Option<String>,
+    // Command history navigation
+    user_command_history: Vec<String>,
+    history_index: Option<usize>,
 }
 
 impl Default for App {
@@ -150,6 +153,8 @@ impl Default for App {
             show_split_view: false,
             log_buffer,
             last_command: None,
+            user_command_history: Vec::new(),
+            history_index: None,
         };
 
         // Add initial state to command history
@@ -184,6 +189,8 @@ impl App {
                     }
                     KeyCode::Char(c) => {
                         self.input_buffer.push(c);
+                        // Reset history navigation when user types
+                        self.history_index = None;
                     }
                     KeyCode::Enter => {
                         self.process_command();
@@ -193,14 +200,47 @@ impl App {
                     }
                     KeyCode::Backspace => {
                         self.input_buffer.pop();
+                        // Reset history navigation when user modifies input
+                        self.history_index = None;
                     }
                     KeyCode::Up => {
-                        // Scroll up (increase offset to show older content)
-                        self.scroll_offset = self.scroll_offset.saturating_add(1);
+                        // Navigate to previous command in history
+                        if !self.user_command_history.is_empty() {
+                            let new_index = match self.history_index {
+                                None => self.user_command_history.len() - 1,
+                                Some(index) => {
+                                    if index > 0 {
+                                        index - 1
+                                    } else {
+                                        // Wrap to newest (end of history)
+                                        self.user_command_history.len() - 1
+                                    }
+                                }
+                            };
+                            self.history_index = Some(new_index);
+                            self.input_buffer = self.user_command_history[new_index].clone();
+                        }
                     }
                     KeyCode::Down => {
-                        // Scroll down (decrease offset to show newer content)
-                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        // Navigate to next (more recent) command in history
+                        if !self.user_command_history.is_empty() {
+                            match self.history_index {
+                                None => {
+                                    // Do nothing if not currently navigating history
+                                }
+                                Some(index) => {
+                                    if index < self.user_command_history.len() - 1 {
+                                        let new_index = index + 1;
+                                        self.history_index = Some(new_index);
+                                        self.input_buffer = self.user_command_history[new_index].clone();
+                                    } else {
+                                        // Wrap to oldest (beginning of history)
+                                        self.history_index = Some(0);
+                                        self.input_buffer = self.user_command_history[0].clone();
+                                    }
+                                }
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -243,7 +283,15 @@ impl App {
                 self.last_command = Some(input.clone());
             }
 
-            // Add command to history
+            // Add user command to history (exclude certain system commands)
+            if !matches!(input.as_str(), "quit" | "q" | "clear" | "cl") {
+                self.user_command_history.push(input.clone());
+            }
+
+            // Reset history navigation when a new command is entered
+            self.history_index = None;
+
+            // Add command to display history
             let display_command = format!("(jpdb) {input}");
             self.command_history.push(display_command);
             input
