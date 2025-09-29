@@ -146,7 +146,7 @@ impl RawGdbResponse {
     }
 
     pub fn find_packet_data(data: &[u8]) -> Result<Self, ParseError> {
-        log::info!(
+        log::debug!(
             "find_packet_data: examining {} bytes: {:?}",
             data.len(),
             String::from_utf8_lossy(data)
@@ -165,7 +165,7 @@ impl RawGdbResponse {
         }
 
         if data.len() < 4 || data[0] != b'$' {
-            log::info!("find_packet_data: packet too short or missing $ prefix");
+            log::debug!("find_packet_data: packet too short or missing $ prefix");
             return Err(ParseError::InvalidFormat("missing $ prefix"));
         }
 
@@ -185,7 +185,7 @@ impl RawGdbResponse {
         // Extract exactly 2 characters for checksum, ignore anything after
         let checksum_str = str::from_utf8(&data[hash_pos + 1..hash_pos + 3])
             .map_err(|_| ParseError::InvalidFormat("invalid checksum -- its not a string"))?;
-        log::info!("Checksum string: {checksum_str}");
+        log::debug!("Checksum string: {checksum_str}");
 
         // Verify checksum
         let expected_checksum =
@@ -194,8 +194,8 @@ impl RawGdbResponse {
         let actual_checksum = content.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
 
         if actual_checksum != expected_checksum {
-            log::info!("Content: {content:?}");
-            log::info!(
+            log::debug!("Content: {content:?}");
+            log::debug!(
                 "Actual checksum: {actual_checksum}, expected checksum: {expected_checksum}"
             );
             return Err(ParseError::InvalidChecksum);
@@ -258,19 +258,19 @@ impl GdbResponse {
 
             // qXfer responses (m<data> or l<data>)
             content if content.starts_with(b"m") => {
-                log::info!("DEBUG: Found 'm' prefix, content length: {}", content.len());
+                log::debug!("DEBUG: Found 'm' prefix, content length: {}", content.len());
                 let data_part = &content[1..];
                 let looks_like_thread = Self::looks_like_thread_info(data_part);
-                log::info!("DEBUG: Data part: {:?}", String::from_utf8_lossy(data_part));
-                log::info!("DEBUG: Looks like thread info: {looks_like_thread}");
+                log::debug!("DEBUG: Data part: {:?}", String::from_utf8_lossy(data_part));
+                log::debug!("DEBUG: Looks like thread info: {looks_like_thread}");
 
                 // This could be either thread info or qXfer data
                 // Try to parse as thread info first, then fall back to qXfer
                 if looks_like_thread {
-                    log::info!("DEBUG: Parsing as thread info");
+                    log::debug!("DEBUG: Parsing as thread info");
                     Self::parse_thread_info(content, false)
                 } else {
-                    log::info!("DEBUG: Parsing as qXfer data");
+                    log::debug!("DEBUG: Parsing as qXfer data");
                     // Parse as qXfer data
                     Ok(GdbResponse::QXferData {
                         data: content[1..].to_vec(),
@@ -362,11 +362,11 @@ impl GdbResponse {
                 let run_length_decoded = Self::decode_run_length(content);
                 let data = Self::decode_hex(&run_length_decoded)?;
 
-                log::info!(
+                log::debug!(
                     "Original content was {:?}",
                     String::from_utf8_lossy(content)
                 );
-                log::info!("Decoded run-length + hex data: {} bytes", data.len());
+                log::debug!("Decoded run-length + hex data: {} bytes", data.len());
 
                 // Use packet type to determine response classification
                 if packet.is_register_read() {
@@ -699,7 +699,7 @@ mod tests {
         crate::init_test_logger();
         assert_eq!(
             test_parse(b"$OK#9a")
-                .inspect_err(|e| log::info!("Error: {e:?}"))
+                .inspect_err(|e| log::debug!("Error: {e:?}"))
                 .expect("Failed ok"),
             GdbResponse::Ok
         );

@@ -144,7 +144,7 @@ impl Client {
     /// Drain any remaining data in the response buffer to ensure synchronization
     fn drain_response_buffer(&mut self) {
         if !self.response_buffer.is_empty() {
-            log::info!(
+            log::debug!(
                 "Draining {} bytes from response buffer to maintain synchronization",
                 self.response_buffer.len()
             );
@@ -154,12 +154,12 @@ impl Client {
 
     pub fn send_command(&mut self, packet: &Packet) -> Result<RawGdbResponse, std::io::Error> {
         let pkt = packet.to_finished_packet(self.packet_scratch.as_mut_slice())?;
-        log::info!("Sending packet: {packet:?}");
+        log::debug!("Sending packet: {packet:?}");
         self.strm.write_all(pkt.0)?;
 
         // Read response with proper packet handling
         let response = self.read_gdb_packet()?;
-        log::info!("Read {} bytes, content is {:?}", response.len(), &response);
+        log::debug!("Read {} bytes, content is {:?}", response.len(), &response);
 
         let _tstr = String::from_utf8_lossy(response.as_slice());
 
@@ -177,7 +177,7 @@ impl Client {
         // First, check if we have a complete packet in the buffer from previous reads
         if let Some((packet, remaining)) = Self::find_first_complete_packet(&self.response_buffer) {
             self.response_buffer = remaining;
-            log::info!(
+            log::debug!(
                 "Returned buffered packet, {} bytes remaining in buffer",
                 self.response_buffer.len()
             );
@@ -212,7 +212,7 @@ impl Client {
                             Self::find_first_complete_packet(&self.response_buffer)
                         {
                             self.response_buffer = remaining;
-                            log::info!(
+                            log::debug!(
                                 "Extracted packet, {} bytes remaining in buffer",
                                 self.response_buffer.len()
                             );
@@ -256,7 +256,7 @@ impl Client {
                 Self::find_first_complete_packet(&self.response_buffer)
             {
                 self.response_buffer = remaining;
-                log::info!(
+                log::debug!(
                     "Extracted packet, {} bytes remaining in buffer",
                     self.response_buffer.len()
                 );
@@ -300,7 +300,7 @@ impl Client {
     ) -> Result<GdbResponse, Box<dyn std::error::Error>> {
         let raw_response = self.send_command(&packet)?;
         let parsed_response = GdbResponse::parse_packet(raw_response, &packet)?;
-        log::info!("Parsed response: {parsed_response} from input {packet:?}");
+        log::debug!("Parsed response: {parsed_response} from input {packet:?}");
         Ok(parsed_response)
     }
 
@@ -311,19 +311,19 @@ impl Client {
     }
 
     pub fn initialize_gdb_session(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        log::info!("Starting GDB initialization sequence...");
+        log::debug!("Starting GDB initialization sequence...");
 
         // QStartNoAckMode must return OK per RSP
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QStartNoAckMode)))? {
             GdbResponse::Ack => {
-                log::info!("QStartNoAckMode acknowledged with an ack");
+                log::debug!("QStartNoAckMode acknowledged with an ack");
                 let resp = self.pop_response()?;
                 if resp != GdbResponse::Ok {
                     return Err(format!("Expected Ok for QStartNoAckMode, got: {resp}").into());
                 }
             }
             GdbResponse::Ok => {
-                log::info!("QStartNoAckMode acknowledged with an ok");
+                log::debug!("QStartNoAckMode acknowledged with an ok");
             }
             other => {
                 return Err(format!("Expected Ack for QStartNoAckMode, got: {other}").into());
@@ -339,7 +339,7 @@ impl Client {
                         format!("qSupported missing PacketSize in features: {features:?}").into(),
                     );
                 }
-                log::info!("qSupported features: {features:?}");
+                log::debug!("qSupported features: {features:?}");
             }
             other => {
                 return Err(format!("Expected qSupported feature list, got: {other}").into());
@@ -347,10 +347,10 @@ impl Client {
         }
 
         // qfThreadInfo must return thread list (may be empty) or 'm...' chunk
-        log::info!("About to send qfThreadInfo...");
+        log::debug!("About to send qfThreadInfo...");
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QfThreadInfo)))? {
             GdbResponse::ThreadInfo { threads, .. } => {
-                log::info!("qfThreadInfo threads: {threads:?}");
+                log::debug!("qfThreadInfo threads: {threads:?}");
             }
             other => {
                 return Err(format!("Expected thread info for qfThreadInfo, got: {other}").into());
@@ -358,10 +358,10 @@ impl Client {
         }
 
         // qsThreadInfo should continue list or return end
-        log::info!("About to send qsThreadInfo...");
+        log::debug!("About to send qsThreadInfo...");
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QsThreadInfo)))? {
             GdbResponse::ThreadInfo { threads, .. } => {
-                log::info!("qsThreadInfo threads: {threads:?}");
+                log::debug!("qsThreadInfo threads: {threads:?}");
             }
             other => {
                 return Err(format!("Expected thread info for qsThreadInfo, got: {other}").into());
@@ -371,7 +371,7 @@ impl Client {
         // '?' must return a stop reply (Sxx or Txx)
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QuestionMark)))? {
             GdbResponse::StopReply { signal, .. } => {
-                log::info!("Got stop reply with signal 0x{signal:02x}");
+                log::debug!("Got stop reply with signal 0x{signal:02x}");
             }
             other => {
                 return Err(format!("Expected stop reply for '?', got: {other}").into());
@@ -387,14 +387,14 @@ impl Client {
                         data.len()
                     ).into());
                 }
-                log::info!("Register read length OK: {} bytes", data.len());
+                log::debug!("Register read length OK: {} bytes", data.len());
             }
             other => {
                 return Err(format!("Expected RegisterData for 'g' (LowerG), got: {other}").into());
             }
         }
 
-        log::info!("GDB initialization sequence complete!");
+        log::debug!("GDB initialization sequence complete!");
         Ok(())
     }
 
@@ -654,11 +654,11 @@ impl Client {
         // Get current PC using the dedicated method
         let pc = self.get_current_pc()?;
 
-        log::info!("Program Counter (PC): 0x{pc}");
+        log::debug!("Program Counter (PC): 0x{pc}");
 
         // Check if we have symbol information
         if let Some((symbol, offset)) = self.find_symbol_at_address(pc.as_u64()) {
-            log::info!("Current function: {} + 0x{:x}", symbol.name, offset);
+            log::debug!("Current function: {} + 0x{:x}", symbol.name, offset);
         }
 
         // Get instruction bytes directly from ELF binary (16 bytes = 4 instructions)
@@ -687,7 +687,7 @@ impl Client {
             let u16inst = uu16
                 .decode(Isa::Rv32)
                 .inspect_err(|e| log::error!("u16 err is {e:?}, 0x{uu16:x}"))
-                .inspect(|arg| log::info!("{arg}"))
+                .inspect(|arg| log::debug!("{arg}"))
                 .map(|val| Instruction(val, pc.add(start as u32)))
                 .ok();
             let u32inst = uu32
@@ -708,7 +708,7 @@ impl Client {
                     if start == 0 {
                         panic!("THERE S A BOMB IN MY CAR");
                     }
-                    log::info!("Done")
+                    log::debug!("Done")
                 }
             }
         }
@@ -989,7 +989,7 @@ mod tests {
                 &packet_type,
             );
 
-            log::info!(
+            log::debug!(
                 "Test case {}: data length = {}, result = {:?}",
                 i,
                 register_data.len(),
@@ -999,10 +999,10 @@ mod tests {
             match response {
                 Ok(GdbResponse::RegisterData { data }) => {
                     assert_eq!(data.len(), register_data.len());
-                    log::info!("✓ Correctly parsed as RegisterData");
+                    log::debug!("✓ Correctly parsed as RegisterData");
                 }
                 Ok(GdbResponse::Empty) if register_data.is_empty() => {
-                    log::info!("✓ Empty register data correctly parsed as Empty");
+                    log::debug!("✓ Empty register data correctly parsed as Empty");
                 }
                 Ok(GdbResponse::MemoryData { data: _ }) => {
                     panic!("⚠ Parsed as MemoryData instead of RegisterData (length={}, divisible by 4={})", 

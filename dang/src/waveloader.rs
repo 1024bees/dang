@@ -159,7 +159,7 @@ impl Loaded {
         }
         let all_changes = merge_changes(all_changes_together);
         let first_pc_idx = pc.find_idx(first_pc).unwrap();
-        log::info!("found first PC index: {first_pc_idx}");
+        log::debug!("found first PC index: {first_pc_idx}");
         let cursor = WaveCursor {
             time_idx: first_pc_idx,
             all_changes,

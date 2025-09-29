@@ -154,7 +154,7 @@ pub fn start_with_args_and_port(
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .try_init();
 
-    log::info!("starting logger to stdout");
+    log::debug!("starting logger to stdout");
 
     let mut emu = Waver::new(wave_path, mapping_path, elf).expect("Could not create wave runtime");
 
@@ -166,32 +166,32 @@ pub fn start_with_args_and_port(
     match gdb.run_blocking::<DangGdbEventLoop>(&mut emu) {
         Ok(disconnect_reason) => match disconnect_reason {
             DisconnectReason::Disconnect => {
-                log::info!("GDB client has disconnected. Running to completion...");
+                log::debug!("GDB client has disconnected. Running to completion...");
             }
             DisconnectReason::TargetExited(code) => {
-                log::info!("Target exited with code {code}!")
+                log::debug!("Target exited with code {code}!")
             }
             DisconnectReason::TargetTerminated(sig) => {
-                log::info!("Target terminated with signal {sig}!")
+                log::debug!("Target terminated with signal {sig}!")
             }
-            DisconnectReason::Kill => log::info!("GDB sent a kill command!"),
+            DisconnectReason::Kill => log::debug!("GDB sent a kill command!"),
         },
         Err(e) => {
             if e.is_target_error() {
-                log::info!(
+                log::debug!(
                     "target encountered a fatal error: {}",
                     e.into_target_error().unwrap()
                 )
             } else if e.is_connection_error() {
                 let (e, kind) = e.into_connection_error().unwrap();
-                log::info!("connection error: {kind:?} - {e}",)
+                log::debug!("connection error: {kind:?} - {e}",)
             } else {
-                log::info!("gdbstub encountered a fatal error: {e}")
+                log::debug!("gdbstub encountered a fatal error: {e}")
             }
         }
     }
 
-    log::info!("Program completed");
+    log::debug!("Program completed");
 
     Ok(())
 }
@@ -204,16 +204,16 @@ pub fn start_with_args_and_listener(
 ) -> DynResult<()> {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
         .try_init();
-    log::info!("started");
+    log::debug!("started");
 
     let mut emu = Waver::new(wave_path, mapping_path, elf).expect("Could not create wave runtime");
 
-    log::info!("emulator made");
+    log::debug!("emulator made");
 
     let connection: Box<dyn ConnectionExt<Error = std::io::Error>> =
         { Box::new(wait_for_tcp_with_listener(listener)?) };
 
-    log::info!("connection made");
+    log::debug!("connection made");
 
     let gdb = GdbStub::new(connection);
 
@@ -222,32 +222,32 @@ pub fn start_with_args_and_listener(
     match gdb.run_blocking::<DangGdbEventLoop>(&mut emu) {
         Ok(disconnect_reason) => match disconnect_reason {
             DisconnectReason::Disconnect => {
-                log::info!("GDB client has disconnected. Running to completion...");
+                log::debug!("GDB client has disconnected. Running to completion...");
             }
             DisconnectReason::TargetExited(code) => {
-                log::info!("Target exited with code {code}!")
+                log::debug!("Target exited with code {code}!")
             }
             DisconnectReason::TargetTerminated(sig) => {
-                log::info!("Target terminated with signal {sig}!")
+                log::debug!("Target terminated with signal {sig}!")
             }
-            DisconnectReason::Kill => log::info!("GDB sent a kill command!"),
+            DisconnectReason::Kill => log::debug!("GDB sent a kill command!"),
         },
         Err(e) => {
             if e.is_target_error() {
-                log::info!(
+                log::debug!(
                     "target encountered a fatal error: {}",
                     e.into_target_error().unwrap()
                 )
             } else if e.is_connection_error() {
                 let (e, kind) = e.into_connection_error().unwrap();
-                log::info!("connection error: {kind:?} - {e}",)
+                log::debug!("connection error: {kind:?} - {e}",)
             } else {
-                log::info!("gdbstub encountered a fatal error: {e}")
+                log::debug!("gdbstub encountered a fatal error: {e}")
             }
         }
     }
 
-    log::info!("Program completed");
+    log::debug!("Program completed");
 
     Ok(())
 }

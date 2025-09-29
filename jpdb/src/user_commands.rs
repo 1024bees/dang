@@ -57,6 +57,7 @@ pub enum UserCommand {
     Continue,
     Toggle,
     Addsig,
+    Debug,
 }
 
 impl UserCommand {
@@ -204,6 +205,15 @@ impl UserCommand {
                 app.addsig_state.activate();
                 Ok(())
             }
+            UserCommand::Debug => {
+                app.show_debug_panel = !app.show_debug_panel;
+                if app.show_debug_panel {
+                    app.command_history.push("Debug panel enabled".to_string());
+                } else {
+                    app.command_history.push("Debug panel disabled".to_string());
+                }
+                Ok(())
+            }
         }
     }
 
@@ -219,6 +229,7 @@ impl UserCommand {
             UserCommand::Continue => "continue",
             UserCommand::Toggle => "toggle",
             UserCommand::Addsig => "addsig",
+            UserCommand::Debug => "debug",
         }
     }
 
@@ -234,6 +245,7 @@ impl UserCommand {
             UserCommand::Continue => &["continue", "c"],
             UserCommand::Toggle => &["toggle", "t"],
             UserCommand::Addsig => &["addsig", "as"],
+            UserCommand::Debug => &["debug", "d"],
         }
     }
 
@@ -248,7 +260,8 @@ impl UserCommand {
             UserCommand::Breakpoint => "Set a breakpoint at the specified address or file:line",
             UserCommand::Continue => "Continue execution until breakpoint",
             UserCommand::Toggle => "Toggle split view (instructions | source code)",
-            UserCommand::Addsig => "Open floating window to add signal via fuzzy search",
+            UserCommand::Addsig => "Open floating window to add waveform signals via fuzzy search",
+            UserCommand::Debug => "Toggle debug panel",
         }
     }
 
@@ -264,6 +277,7 @@ impl UserCommand {
             UserCommand::Continue => "continue",
             UserCommand::Toggle => "toggle",
             UserCommand::Addsig => "addsig",
+            UserCommand::Debug => "debug",
         }
     }
 
@@ -284,6 +298,7 @@ impl UserCommand {
             UserCommand::Continue => &["continue", "c"],
             UserCommand::Toggle => &["toggle", "t"],
             UserCommand::Addsig => &["addsig", "as"],
+            UserCommand::Debug => &["debug", "d"],
         }
     }
 
@@ -299,6 +314,7 @@ impl UserCommand {
             UserCommand::Continue,
             UserCommand::Toggle,
             UserCommand::Addsig,
+            UserCommand::Debug,
         ]
     }
 }
