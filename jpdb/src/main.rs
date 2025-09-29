@@ -24,7 +24,6 @@ use ratatui::{
     Frame, Terminal,
 };
 use shucks::{
-    client::Instruction,
     commands::{GdbCommand, Resume},
     Client, Packet,
 };
@@ -84,6 +83,7 @@ pub struct App {
 
     input_buffer: String,
     pub command_history: Vec<String>,
+    pub instruction_output: Vec<String>,
     pub shucks_client: Client,
     _dang_thread_handle: thread::JoinHandle<()>,
     scroll_offset: usize,
@@ -145,6 +145,7 @@ impl Default for App {
             should_quit: false,
             input_buffer: String::new(),
             command_history: Vec::new(),
+            instruction_output: Vec::new(),
             shucks_client,
             _dang_thread_handle: dang_handle,
             scroll_offset: 0,
@@ -155,9 +156,6 @@ impl Default for App {
             user_command_history: Vec::new(),
             history_index: None,
         };
-
-        // Add initial state to command history
-        app.command_history.push("Process 1 stopped".to_string());
 
         // Show initial instructions when first connecting
         app.add_execution_info();
@@ -311,8 +309,9 @@ impl App {
 
     pub fn add_execution_info(&mut self) {
         log::debug!("Adding execution info");
-        self.command_history.push("Process 1 stopped".to_string());
-        self.command_history
+        self.instruction_output.clear(); // Clear previous instruction output
+        self.instruction_output.push("Process 1 stopped".to_string());
+        self.instruction_output
             .push("* thread #1, stop reason = instruction step over".to_string());
 
         // Get current PC from shucks
@@ -321,7 +320,7 @@ impl App {
             Ok(current_pc) => {
                 log::debug!("Successfully got current PC: 0x{current_pc}");
                 let frame_info = format!("    frame #0: 0x{current_pc}");
-                self.command_history.push(frame_info);
+                self.instruction_output.push(frame_info);
 
                 // Try to get current instruction info from shucks
 
@@ -331,26 +330,26 @@ impl App {
                         let inst_pc = ainst.pc().as_u32();
                         if i == 0 {
                             // First instruction gets the arrow
-                            self.command_history
+                            self.instruction_output
                                 .push(format!("->  0x{inst_pc:x}: {ainst}"));
                         } else {
                             // Subsequent instructions without arrow
-                            self.command_history
+                            self.instruction_output
                                 .push(format!("    0x{inst_pc:x}: {ainst}"));
                         }
                     }
                 } else {
-                    self.command_history
+                    self.instruction_output
                         .push(format!("->  0x{current_pc}: <unable to get instructions>"));
                 }
             }
             Err(e) => {
                 log::error!("Failed to get current PC: {e}");
-                self.command_history.push(format!("Error getting PC: {e}"));
+                self.instruction_output.push(format!("Error getting PC: {e}"));
             }
         }
 
-        self.command_history
+        self.instruction_output
             .push("Target 0: (No executable module.) stopped.".to_string());
     }
 
@@ -377,7 +376,47 @@ impl App {
         }
     }
 
-    fn render_combined_output(&self, f: &mut Frame, area: ratatui::layout::Rect) {
+    fn render_combined_output(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
+        // Split the area vertically: instruction panel (top 40%) and command area (bottom 60%)
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
+            .split(area);
+
+        // Render instruction panel at the top
+        self.render_instruction_panel_combined(f, chunks[0]);
+
+        // Render command history and prompt at the bottom
+        self.render_command_area(f, chunks[1]);
+    }
+
+    fn render_instruction_panel_combined(&self, f: &mut Frame, area: ratatui::layout::Rect) {
+        let items: Vec<ListItem> = self.instruction_output
+            .iter()
+            .map(|line| {
+                let style = if line.starts_with("->") {
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else if line.starts_with("Error") {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(line.clone()).style(style)
+            })
+            .collect();
+
+        let instruction_panel = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Execution State"),
+        );
+
+        f.render_widget(instruction_panel, area);
+    }
+
+    fn render_command_area(&self, f: &mut Frame, area: ratatui::layout::Rect) {
         // Combine command history with the current prompt
         let mut all_lines: Vec<String> = self.command_history.clone();
 
@@ -412,10 +451,6 @@ impl App {
                         .add_modifier(Modifier::BOLD)
                 } else if line.starts_with("error:") {
                     Style::default().fg(Color::Red)
-                } else if line.starts_with("->") {
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::White)
                 };
@@ -423,9 +458,13 @@ impl App {
             })
             .collect();
 
-        let combined_output = List::new(items); // No borders or title for minimal look
+        let command_area = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Command History"),
+        );
 
-        f.render_widget(combined_output, area);
+        f.render_widget(command_area, area);
     }
 
     fn render_debug_panel(&self, f: &mut Frame, area: ratatui::layout::Rect) {
