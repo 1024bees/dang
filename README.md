@@ -105,10 +105,10 @@ JPDB is really a few things glued together
 * shucks: a GDB client, written for this project specfically, with some extra hooks for interacting with waves via `wellen`
 * a tui, showing the state taken out of shucks
 
-when i was starting this out, the point was to start out with just dang and make people bring their own GDB. but two things quickly became clear: 
+when i was starting this out, the point was to start out with just dang (gdb server stub) and make people bring their own GDB client. but two things quickly became clear: 
 
-1. its kind of annoying to get your own gdb. i develop on a mac, and building gdb from scratch on a mac is non trivial. distributing it broadly for people to actually use also kind of sucks
-2. having control over the TUI would be useful for more aggresively integrating with wave specific stuff
+1. its kind of annoying to get your own gdb client. i develop on a mac, and building gdb from scratch on a mac is non trivial. distributing it broadly for people to actually use also kind of sucks. also riscv support for defacto gdb clients was dubious
+2. having control over the TUI would be useful for more aggresively integrating with waveform specific date
 
 you can use these libaries on their own. they should _just_work_ hopefully
 
