@@ -700,14 +700,15 @@ impl App {
     fn sync_waveform_position(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ref mut wcp) = self.wcp_client {
             if let Ok(time_idx) = self.model.get_time_idx() {
-                self.model
+                let time = self
+                    .model
                     .client
                     .wave_tracker
                     .as_ref()
                     .unwrap()
                     .get_current_time(time_idx as shucks::TimeTableIdx);
 
-                wcp.goto_time(time_idx)?;
+                wcp.goto_time(time)?;
             }
         }
         Ok(())
