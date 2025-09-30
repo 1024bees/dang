@@ -14,7 +14,6 @@ use crate::{
 };
 use goblin::elf::Elf;
 use raki::{Decode, Isa};
-use wellen::simple::Waveform;
 
 pub struct Client {
     strm: TcpStream,

@@ -41,7 +41,7 @@ pub fn parse_breakpoint_arg(input: &str) -> Result<BreakpointTarget, String> {
 
     match addr {
         Ok(address) => Ok(BreakpointTarget::Address(address)),
-        Err(_) => Err(format!("Invalid breakpoint format: {}", input)),
+        Err(_) => Err(format!("Invalid breakpoint format: {input}")),
     }
 }
 
@@ -130,10 +130,10 @@ impl UserCommand {
                 BreakpointTarget::Address(address) => match app.set_breakpoint(address) {
                     Ok(()) => {
                         app.command_history
-                            .push(format!("Breakpoint set at address 0x{:x}", address));
+                            .push(format!("Breakpoint set at address 0x{address:x}"));
                         Ok(())
                     }
-                    Err(e) => Err(format!("Failed to set breakpoint: {}", e)),
+                    Err(e) => Err(format!("Failed to set breakpoint: {e}")),
                 },
                 BreakpointTarget::FileLine { file, line } => {
                     let file_str = file.to_string_lossy();
@@ -152,7 +152,7 @@ impl UserCommand {
                                     addresses.len(),
                                     addresses
                                         .iter()
-                                        .map(|a| format!("0x{:x}", a))
+                                        .map(|a| format!("0x{a:x}"))
                                         .collect::<Vec<_>>()
                                         .join(", ")
                                 ));
@@ -160,8 +160,7 @@ impl UserCommand {
                             Ok(())
                         }
                         Err(e) => Err(format!(
-                            "Failed to set breakpoint at {}:{}: {}",
-                            file_str, line, e
+                            "Failed to set breakpoint at {file_str}:{line}: {e}"
                         )),
                     }
                 }
@@ -170,7 +169,7 @@ impl UserCommand {
                 app.command_history.push("Continuing...".to_string());
                 // Send continue command via shucks client
                 if let Err(e) = app.continue_execution() {
-                    return Err(format!("Error continuing execution: {}", e));
+                    return Err(format!("Error continuing execution: {e}"));
                 }
 
                 app.command_history.push("Hit breakpoint...".to_string());

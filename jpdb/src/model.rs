@@ -201,7 +201,7 @@ impl DebuggerModel {
         let mut lines = Vec::new();
         if let Some(ref mut tracker) = self.client.wave_tracker {
             let current_time = tracker.get_current_time(time_idx as TimeTableIdx);
-            lines.push(format!("{} ps", current_time));
+            lines.push(format!("{current_time} ps"));
             lines.push(String::new());
 
             let signal_names = tracker.get_signal_names();
@@ -211,7 +211,7 @@ impl DebuggerModel {
             } else {
                 let signal_values = tracker.get_values(time_idx as TimeTableIdx);
                 for (name, value) in signal_names.iter().zip(signal_values.iter()) {
-                    lines.push(format!("{}: {}", name, value));
+                    lines.push(format!("{name}: {value}"));
                 }
             }
         }
@@ -235,10 +235,6 @@ impl DebuggerModel {
 
     pub fn invalidate_time_index(&mut self) {
         self.cached_time_idx = None;
-    }
-
-    pub fn is_terminated(&self) -> bool {
-        self.terminated
     }
 
     fn get_time_index(&mut self) -> ModelResult<u64> {

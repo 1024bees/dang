@@ -89,6 +89,12 @@ pub struct AddSigState {
     selected_index: usize,
 }
 
+impl Default for AddSigState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AddSigState {
     pub fn new() -> Self {
         Self {
@@ -166,6 +172,12 @@ pub struct HelpModalState {
     active: bool,
     content: Vec<String>,
     scroll_offset: usize,
+}
+
+impl Default for HelpModalState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HelpModalState {
@@ -289,7 +301,9 @@ impl Default for App {
         let mut view_state = ViewState::default();
         controller.refresh_all_views(&mut view_state);
 
-        let app = App {
+        
+
+        App {
             should_quit: false,
             input_buffer: String::new(),
             command_history: Vec::new(),
@@ -306,9 +320,7 @@ impl Default for App {
             history_index: None,
             addsig_state: AddSigState::new(),
             help_modal_state: HelpModalState::new(),
-        };
-
-        app
+        }
     }
 }
 

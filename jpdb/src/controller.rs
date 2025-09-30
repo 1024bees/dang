@@ -33,26 +33,6 @@ impl Controller {
         }
     }
 
-    pub fn refresh_execution_view(&mut self, view: &mut ViewState) {
-        match self.fetch_execution_snapshot() {
-            Ok(snapshot) => Self::apply_execution_snapshot(view, snapshot),
-            Err(err) => {
-                let msg = format!("Error getting execution info: {err}");
-                view.execution_lines = vec![msg.clone()];
-                view.instruction_lines = vec![msg];
-            }
-        }
-    }
-
-    pub fn refresh_source_view(&mut self, view: &mut ViewState) {
-        match self.fetch_source_snapshot() {
-            Ok(snapshot) => view.source_lines = snapshot.lines,
-            Err(err) => {
-                view.source_lines = vec![format!("Error getting source info: {err}")];
-            }
-        }
-    }
-
     pub fn refresh_signal_view(&mut self, view: &mut ViewState) {
         match self.fetch_signal_snapshot() {
             Ok(snapshot) => view.signal_lines = snapshot.lines,
