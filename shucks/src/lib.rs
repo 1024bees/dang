@@ -9,9 +9,9 @@ mod wavetracker;
 
 pub use addr2line_stepper::SourceLine;
 pub use client::Client;
-pub use wellen::Var;
 use commands::{Base, GdbCommand};
 use packet::FinishedPacket;
+pub use wellen::{TimeTableIdx, Var};
 
 /// Top-Level GDB packet
 #[derive(Default, Debug)]
@@ -123,7 +123,7 @@ mod tests {
         let response1 = cl
             .send_command(&Packet::Command(GdbCommand::Resume(Resume::Step)))
             .expect("Failed to send first step command");
-        log::info!(
+        log::debug!(
             "First step response: {:?}",
             String::from_utf8_lossy(response1.as_slice())
         );
@@ -132,7 +132,7 @@ mod tests {
         let response2 = cl
             .send_command(&Packet::Command(GdbCommand::Resume(Resume::Step)))
             .expect("Failed to send second step command");
-        log::info!(
+        log::debug!(
             "Second step response: {:?}",
             String::from_utf8_lossy(response2.as_slice())
         );

@@ -64,7 +64,7 @@ impl DummyMem {
 
 impl Waver {
     pub fn reset(&mut self) {
-        log::info!("resetting cursor! actually doing nothing");
+        log::debug!("resetting cursor! actually doing nothing");
     }
 
     pub fn new(
@@ -116,7 +116,7 @@ impl Waver {
             }
         }
 
-        log::info!(
+        log::debug!(
             "The first PC that should be executed is 0x{:08x} (entry = 0x{:08x}).",
             first_pc,
             elf_header.entry
@@ -161,8 +161,8 @@ impl Waver {
     pub fn step(&mut self) -> Option<Event> {
         let next_pc = self.next_pc();
         if let Some(pc) = next_pc {
-            log::info!("pc is {pc:?}");
-            log::info!("mem is {:?}", self.mem.r32(pc));
+            log::debug!("pc is {pc:?}");
+            log::debug!("mem is {:?}", self.mem.r32(pc));
 
             if self.breakpoints.contains(&pc) {
                 return Some(Event::Break);
@@ -170,7 +170,7 @@ impl Waver {
             None
         } else {
             let current_pc: u32 = self.get_current_pc();
-            log::info!("Could not advance past current pc-- extracted value is {current_pc}");
+            log::debug!("Could not advance past current pc-- extracted value is {current_pc}");
             Some(Event::Halted)
         }
     }
@@ -187,7 +187,7 @@ impl Waver {
                 let mut cycles = 0;
                 loop {
                     if cycles % 1024 == 0 {
-                        log::info!("executed {cycles} cycles");
+                        log::debug!("executed {cycles} cycles");
                         // poll for incoming data
                         if poll_incoming_data() {
                             break RunEvent::IncomingData;
@@ -223,7 +223,7 @@ impl Waver {
                 }
             }
         };
-        log::info!("run_event is {run_event:?}");
+        log::debug!("run_event is {run_event:?}");
         run_event
     }
 }

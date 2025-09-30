@@ -3,7 +3,6 @@ use crate::runtime::{RequiredWaves, WaveCursor};
 
 use anyhow::Result;
 use pyo3::prelude::*;
-use pyo3::PyResult;
 use pywellen::{self, pywellen as doggy};
 use wellen::{self, LoadOptions, Signal, SignalValue, TimeTableIdx};
 
@@ -159,7 +158,7 @@ impl Loaded {
         }
         let all_changes = merge_changes(all_changes_together);
         let first_pc_idx = pc.find_idx(first_pc).unwrap();
-        log::info!("found first PC index: {first_pc_idx}");
+        log::debug!("found first PC index: {first_pc_idx}");
         let cursor = WaveCursor {
             time_idx: first_pc_idx,
             all_changes,
@@ -182,39 +181,23 @@ fn initialize() {
 }
 
 pub enum MappingParsedEvents {
-    FileStatus {
-        found: bool,
-    },
-    FunctionStatus {
-        found: bool,
-    },
+    FileStatus,
+    FunctionStatus,
     /// If error message is null, it succeeded
-    WaveCreationStatus {
-        error_message: Option<String>,
-    },
+    WaveCreationStatus,
     /// If error essage is null, it succeeded
-    GetFnCall {
-        error_message: Option<String>,
-    },
-    /// If no missing signals, it succeeded
-    GDBSignalStatus {
-        missing_signals: Vec<String>,
-    },
+    GetFnCall,
 }
-
-pub struct WellenPayload {}
 
 pub struct ValidationResult {
     /// If None, it failed
     pub signals: Option<HashMap<String, wellen::Signal>>,
-    pub all_events: Vec<MappingParsedEvents>,
 }
 
 impl ValidationResult {
-    pub fn from_events(all_events: Vec<MappingParsedEvents>) -> Self {
+    pub fn from_events(_all_events: Vec<MappingParsedEvents>) -> Self {
         Self {
             signals: None,
-            all_events,
         }
     }
 }
@@ -225,10 +208,10 @@ pub fn validate_get_signals(script: &Path, fn_name: &str, wave_path: &Path) -> V
 
     let script_content = fs::read_to_string(script);
     if let Err(_) = script_content {
-        events.push(MappingParsedEvents::FileStatus { found: false });
+        events.push(MappingParsedEvents::FileStatus);
         return ValidationResult::from_events(events);
     }
-    events.push(MappingParsedEvents::FileStatus { found: true });
+    events.push(MappingParsedEvents::FileStatus);
     let script_content = script_content.unwrap();
 
     pyo3::prepare_freethreaded_python();
@@ -239,9 +222,7 @@ pub fn validate_get_signals(script: &Path, fn_name: &str, wave_path: &Path) -> V
         let activators = match activators {
             Ok(module) => module,
             Err(e) => {
-                events.push(MappingParsedEvents::WaveCreationStatus {
-                    error_message: Some(format!("Failed to load Python module: {}", e)),
-                });
+                events.push(MappingParsedEvents::WaveCreationStatus);
                 return Err(e);
             }
         };
@@ -250,15 +231,11 @@ pub fn validate_get_signals(script: &Path, fn_name: &str, wave_path: &Path) -> V
             pywellen::Waveform::new(wave_path.to_string_lossy().to_string(), true, true);
         let wave = match wave_result {
             Ok(w) => {
-                events.push(MappingParsedEvents::WaveCreationStatus {
-                    error_message: None,
-                });
+                events.push(MappingParsedEvents::WaveCreationStatus);
                 w
             }
             Err(e) => {
-                events.push(MappingParsedEvents::WaveCreationStatus {
-                    error_message: Some(e.to_string()),
-                });
+                events.push(MappingParsedEvents::WaveCreationStatus);
                 return Err(pyo3::PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                     e.to_string(),
                 ));
@@ -270,14 +247,12 @@ pub fn validate_get_signals(script: &Path, fn_name: &str, wave_path: &Path) -> V
         let function_result = activators.getattr(fn_name);
         let function = match function_result {
             Ok(f) => {
-                events.push(MappingParsedEvents::FunctionStatus { found: true });
+                events.push(MappingParsedEvents::FunctionStatus);
                 f
             }
             Err(e) => {
-                events.push(MappingParsedEvents::FunctionStatus { found: false });
-                events.push(MappingParsedEvents::GetFnCall {
-                    error_message: Some(format!("Function '{}' not found: {}", fn_name, e)),
-                });
+                events.push(MappingParsedEvents::FunctionStatus);
+                events.push(MappingParsedEvents::GetFnCall);
                 return Err(e);
             }
         };
@@ -285,15 +260,11 @@ pub fn validate_get_signals(script: &Path, fn_name: &str, wave_path: &Path) -> V
         let call_result = function.call1((wave_bound,));
         let all_waves: HashMap<String, pywellen::Signal> = match call_result {
             Ok(result) => {
-                events.push(MappingParsedEvents::GetFnCall {
-                    error_message: None,
-                });
+                events.push(MappingParsedEvents::GetFnCall);
                 result.extract()?
             }
             Err(e) => {
-                events.push(MappingParsedEvents::GetFnCall {
-                    error_message: Some(format!("Function call failed: {}", e)),
-                });
+                events.push(MappingParsedEvents::GetFnCall);
                 return Err(e);
             }
         };
@@ -329,7 +300,6 @@ pub fn validate_get_signals(script: &Path, fn_name: &str, wave_path: &Path) -> V
 
     ValidationResult {
         signals,
-        all_events: events,
     }
 }
 

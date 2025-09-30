@@ -85,6 +85,7 @@ pub enum StopReason {
     Watchpoint { addr: u32 },
     SingleStep,
     ProcessExit { code: u8 },
+    SignalTermination(u8),
     Unknown,
 }
 
@@ -146,12 +147,6 @@ impl RawGdbResponse {
     }
 
     pub fn find_packet_data(data: &[u8]) -> Result<Self, ParseError> {
-        log::info!(
-            "find_packet_data: examining {} bytes: {:?}",
-            data.len(),
-            String::from_utf8_lossy(data)
-        );
-
         if data.is_empty() {
             return Err(ParseError::InvalidFormat("no data"));
         }
@@ -165,7 +160,7 @@ impl RawGdbResponse {
         }
 
         if data.len() < 4 || data[0] != b'$' {
-            log::info!("find_packet_data: packet too short or missing $ prefix");
+            log::warn!("find_packet_data: packet too short or missing $ prefix");
             return Err(ParseError::InvalidFormat("missing $ prefix"));
         }
 
@@ -185,7 +180,6 @@ impl RawGdbResponse {
         // Extract exactly 2 characters for checksum, ignore anything after
         let checksum_str = str::from_utf8(&data[hash_pos + 1..hash_pos + 3])
             .map_err(|_| ParseError::InvalidFormat("invalid checksum -- its not a string"))?;
-        log::info!("Checksum string: {checksum_str}");
 
         // Verify checksum
         let expected_checksum =
@@ -194,9 +188,8 @@ impl RawGdbResponse {
         let actual_checksum = content.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
 
         if actual_checksum != expected_checksum {
-            log::info!("Content: {content:?}");
-            log::info!(
-                "Actual checksum: {actual_checksum}, expected checksum: {expected_checksum}"
+            log::error!(
+                "checksum mismatch! actual checksum: {actual_checksum}, expected checksum: {expected_checksum}"
             );
             return Err(ParseError::InvalidChecksum);
         }
@@ -217,19 +210,8 @@ impl GdbResponse {
     fn parse_content(raw_resp: RawGdbResponse, packet: &Packet) -> Result<Self, ParseError> {
         let content = raw_resp.as_slice();
 
-        log::debug!(
-            "Parsing content ({} bytes): {:?}",
-            content.len(),
-            String::from_utf8_lossy(content)
-        );
-        log::debug!(
-            "AAAAAAAAAAPacket starts with {:?}, {}",
-            content.first(),
-            content.starts_with(b"m")
-        );
-
         if content.is_empty() {
-            log::debug!("Empty content -> GdbResponse::Empty");
+            log::trace!("Empty content -> GdbResponse::Empty");
             return Ok(GdbResponse::Empty);
         }
 
@@ -251,26 +233,21 @@ impl GdbResponse {
                 Ok(GdbResponse::Error { code })
             }
 
-            // Stop reply packet (Sxx or Txx...)
-            content if content.len() >= 3 && (content[0] == b'S' || content[0] == b'T') => {
+            // Stop reply packet (Sxx, Txx, Wxx, or Xxx)
+            content if content.len() >= 3 && (content[0] == b'S' || content[0] == b'T' || content[0] == b'W' || content[0] == b'X') => {
                 Self::parse_stop_reply(content)
             }
 
             // qXfer responses (m<data> or l<data>)
             content if content.starts_with(b"m") => {
-                log::info!("DEBUG: Found 'm' prefix, content length: {}", content.len());
                 let data_part = &content[1..];
                 let looks_like_thread = Self::looks_like_thread_info(data_part);
-                log::info!("DEBUG: Data part: {:?}", String::from_utf8_lossy(data_part));
-                log::info!("DEBUG: Looks like thread info: {looks_like_thread}");
 
                 // This could be either thread info or qXfer data
                 // Try to parse as thread info first, then fall back to qXfer
                 if looks_like_thread {
-                    log::info!("DEBUG: Parsing as thread info");
                     Self::parse_thread_info(content, false)
                 } else {
-                    log::info!("DEBUG: Parsing as qXfer data");
                     // Parse as qXfer data
                     Ok(GdbResponse::QXferData {
                         data: content[1..].to_vec(),
@@ -317,36 +294,29 @@ impl GdbResponse {
                 // Monitor responses often come in the format "O<hex-encoded-text>"
                 // where 'O' indicates console output
                 let output = if content.starts_with(b"O") && content.len() > 1 {
-                    // Strip the 'O' prefix and decode the remaining hex
-                    println!("stripped hex content is {:?}", &content[1..]);
+                    // Strip the 'O' prefix, decode run-length encoding, then decode hex
                     let hex_content = &content[1..];
-                    if Self::is_hex_data(hex_content) {
-                        println!("hex content is hex data");
-                        match Self::decode_hex(hex_content) {
+
+                    // Decode run-length encoding first (handles '*' markers)
+                    let run_length_decoded = Self::decode_run_length(hex_content);
+
+                    if Self::is_hex_data(&run_length_decoded) {
+                        match Self::decode_hex(&run_length_decoded) {
                             Ok(decoded_bytes) => {
-                                println!("decoded bytes are {:?}", &decoded_bytes);
                                 String::from_utf8_lossy(&decoded_bytes).to_string()
                             }
-                            Err(e) => {
-                                println!("error is {e:?} when decoding hex data");
-                                String::from_utf8_lossy(content).to_string()
-                            }
+                            Err(_e) => String::from_utf8_lossy(content).to_string(),
                         }
                     } else {
                         String::from_utf8_lossy(content).to_string()
                     }
-                } else if Self::is_hex_data(content) {
-                    println!("hex content is hex data");
-                    println!("unstripped hex content is {:?}", &content[1..]);
-
-                    // Try to decode as hex first
-                    match Self::decode_hex(content) {
-                        Ok(decoded_bytes) => {
-                            println!("decoded bytes are {:?}", &decoded_bytes);
-                            String::from_utf8_lossy(&decoded_bytes).to_string()
-                        }
+                } else if Self::is_hex_data_or_run_length(content) {
+                    // Decode run-length encoding first, then try hex decode
+                    let run_length_decoded = Self::decode_run_length(content);
+                    match Self::decode_hex(&run_length_decoded) {
+                        Ok(decoded_bytes) => String::from_utf8_lossy(&decoded_bytes).to_string(),
                         Err(e) => {
-                            println!("error is {e:?} when decoding hex data");
+                            log::error!("error is {e:?} when decoding hex data");
                             String::from_utf8_lossy(content).to_string()
                         }
                     }
@@ -362,21 +332,17 @@ impl GdbResponse {
                 let run_length_decoded = Self::decode_run_length(content);
                 let data = Self::decode_hex(&run_length_decoded)?;
 
-                log::info!(
-                    "Original content was {:?}",
-                    String::from_utf8_lossy(content)
-                );
-                log::info!("Decoded run-length + hex data: {} bytes", data.len());
+                log::trace!("Decoded run-length + hex data: {} bytes", data.len());
 
                 // Use packet type to determine response classification
                 if packet.is_register_read() {
-                    log::debug!(
+                    log::trace!(
                         "Classified as RegisterData based on packet type (length={})",
                         data.len()
                     );
                     Ok(GdbResponse::RegisterData { data })
                 } else if packet.is_memory_read() {
-                    log::debug!(
+                    log::trace!(
                         "Classified as MemoryData based on packet type (length={})",
                         data.len()
                     );
@@ -384,7 +350,7 @@ impl GdbResponse {
                 } else {
                     // Fallback: use heuristic for unknown packet types
                     if data.len() >= 128 && data.len() % 4 == 0 {
-                        log::debug!(
+                        log::trace!(
                             "Heuristically classified as RegisterData (length={}, divisible by 4)",
                             data.len()
                         );
@@ -401,33 +367,42 @@ impl GdbResponse {
 
             // Default: return as raw data
             _ => {
-                log::debug!("Classified as Raw data (no specific pattern matched)");
+                log::trace!("Classified as Raw data (no specific pattern matched)");
                 Ok(GdbResponse::Raw {
                     data: content.to_vec(),
                 })
             }
         }
         .map(|response| {
-            log::debug!("Final parsed response: {response}");
+            log::trace!("Final parsed response: {response}");
             response
         })
     }
 
-    /// Parse stop reply packets (S or T packets)
+    /// Parse stop reply packets (S, T, W, or X packets)
     fn parse_stop_reply(content: &[u8]) -> Result<Self, ParseError> {
         if content.len() < 3 {
             return Err(ParseError::InvalidFormat("stop reply packet too short"));
         }
 
-        let signal_str = str::from_utf8(&content[1..3]).map_err(|_| ParseError::InvalidHex)?;
-        let signal = u8::from_str_radix(signal_str, 16).map_err(|_| ParseError::InvalidHex)?;
+        let packet_type = content[0];
+        let value_str = str::from_utf8(&content[1..3]).map_err(|_| ParseError::InvalidHex)?;
+        let value = u8::from_str_radix(value_str, 16).map_err(|_| ParseError::InvalidHex)?;
 
-        // For now, we'll parse just the basic signal
-        // TODO: Parse additional stop reply information (thread ID, registers, etc.)
+        // Determine the reason based on packet type
+        let reason = match packet_type {
+            b'S' | b'T' => StopReason::Signal(value),
+            b'W' => StopReason::ProcessExit { code: value },
+            b'X' => StopReason::SignalTermination(value),
+            _ => return Err(ParseError::InvalidFormat("unknown stop reply packet type")),
+        };
+
+        // For now, we'll parse just the basic signal/code
+        // TODO: Parse additional stop reply information (thread ID, registers, process:pid extensions, etc.)
         Ok(GdbResponse::StopReply {
-            signal,
+            signal: value,
             thread_id: None,
-            reason: StopReason::Signal(signal),
+            reason,
         })
     }
 
@@ -699,7 +674,7 @@ mod tests {
         crate::init_test_logger();
         assert_eq!(
             test_parse(b"$OK#9a")
-                .inspect_err(|e| log::info!("Error: {e:?}"))
+                .inspect_err(|e| log::debug!("Error: {e:?}"))
                 .expect("Failed ok"),
             GdbResponse::Ok
         );
@@ -799,5 +774,69 @@ mod tests {
 
         let hex_decoded = GdbResponse::decode_hex(&run_length_decoded).unwrap();
         assert_eq!(hex_decoded, vec![0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_parse_w_packet_normal_exit() {
+        crate::init_test_logger();
+        // Test W packet - normal process exit with code 0
+        // Checksum: W(87) + 0(48) + 0(48) = 183 = 0xb7
+        let packet = b"$W00#b7";
+        let response = test_parse(packet).expect("Failed to parse W00 packet");
+
+        if let GdbResponse::StopReply { signal, reason, .. } = response {
+            assert_eq!(signal, 0x00);
+            assert_eq!(reason, StopReason::ProcessExit { code: 0x00 });
+        } else {
+            panic!("Expected StopReply with ProcessExit, got: {:?}", response);
+        }
+    }
+
+    #[test]
+    fn test_parse_x_packet_signal_termination() {
+        crate::init_test_logger();
+        // Test X packet - termination with signal 0x11 (the original issue)
+        // Checksum: X(88) + 1(49) + 1(49) = 186 = 0xba
+        let packet = b"$X11#ba";
+        let response = test_parse(packet).expect("Failed to parse X11 packet");
+
+        if let GdbResponse::StopReply { signal, reason, .. } = response {
+            assert_eq!(signal, 0x11);
+            assert_eq!(reason, StopReason::SignalTermination(0x11));
+        } else {
+            panic!("Expected StopReply with SignalTermination, got: {:?}", response);
+        }
+    }
+
+    #[test]
+    fn test_parse_w_packet_nonzero_exit() {
+        crate::init_test_logger();
+        // Test W packet with non-zero exit code
+        // Checksum: W(87) + 0(48) + 1(49) = 184 = 0xb8
+        let packet = b"$W01#b8";
+        let response = test_parse(packet).expect("Failed to parse W01 packet");
+
+        if let GdbResponse::StopReply { signal, reason, .. } = response {
+            assert_eq!(signal, 0x01);
+            assert_eq!(reason, StopReason::ProcessExit { code: 0x01 });
+        } else {
+            panic!("Expected StopReply with ProcessExit, got: {:?}", response);
+        }
+    }
+
+    #[test]
+    fn test_parse_x_packet_different_signals() {
+        crate::init_test_logger();
+        // Test X packet with SIGSEGV (signal 11 decimal = 0x0b)
+        // Checksum: X(88) + 0(48) + b(98) = 234 = 0xea
+        let packet = b"$X0b#ea";
+        let response = test_parse(packet).expect("Failed to parse X0b packet");
+
+        if let GdbResponse::StopReply { signal, reason, .. } = response {
+            assert_eq!(signal, 0x0b);
+            assert_eq!(reason, StopReason::SignalTermination(0x0b));
+        } else {
+            panic!("Expected StopReply with SignalTermination, got: {:?}", response);
+        }
     }
 }

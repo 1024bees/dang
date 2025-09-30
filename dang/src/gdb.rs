@@ -74,7 +74,7 @@ impl MonitorCmd for Waver {
         cmd: &[u8],
         mut out: ConsoleOutput<'_>,
     ) -> Result<(), Self::Error> {
-        log::info!("DANG SERVER: Received monitor command (QRcmd) with raw bytes: {cmd:?}");
+        log::debug!("DANG SERVER: Received monitor command (QRcmd) with raw bytes: {cmd:?}");
         let cmd = match core::str::from_utf8(cmd) {
             Ok(cmd) => cmd,
             Err(_) => {
@@ -82,7 +82,7 @@ impl MonitorCmd for Waver {
                 return Ok(());
             }
         };
-        log::info!("DANG SERVER: Processing monitor command: '{cmd}'");
+        log::debug!("DANG SERVER: Processing monitor command: '{cmd}'");
 
         match cmd {
             "" => outputln!(out,
@@ -90,7 +90,7 @@ impl MonitorCmd for Waver {
             ),
             "time_idx" => {
                 let time_idx = self.cursor.time_idx;
-                log::info!("DANG SERVER: time_idx command returning: {time_idx}");
+                log::debug!("DANG SERVER: time_idx command returning: {time_idx}");
                 outputln!(out, "{}", time_idx)
             },
             _ => outputln!(out, "I don't know how to handle '{}'", cmd),
@@ -242,9 +242,9 @@ impl SingleThreadBase for Waver {
         &mut self,
         regs: &mut <Riscv32 as Arch>::Registers,
     ) -> TargetResult<(), Self> {
-        log::info!("DANG SERVER: Received read_registers command (LowerG)");
+        log::debug!("DANG SERVER: Received read_registers command (LowerG)");
         regs.pc = self.get_current_pc();
-        log::info!("reading pc; pc is {:x}", regs.pc);
+        log::debug!("reading pc; pc is {:x}", regs.pc);
         for i in 0..32 {
             log::trace!("regs {} is {:x}", i, self.get_current_gpr(i));
             regs.x[i] = self.get_current_gpr(i);
@@ -267,7 +267,7 @@ impl SingleThreadBase for Waver {
     }
 
     fn read_addrs(&mut self, start_addr: u32, data: &mut [u8]) -> TargetResult<usize, Self> {
-        log::info!("DANG SERVER: Received read_addrs command (LowerM) - reading memory from {:x} to {:x}, {} bytes",
+        log::debug!("DANG SERVER: Received read_addrs command (LowerM) - reading memory from {:x} to {:x}, {} bytes",
             start_addr,
             start_addr + data.len() as u32,
             data.len()
@@ -372,7 +372,7 @@ impl target::ext::base::single_register_access::SingleRegisterAccess<()> for Wav
             _ => Err(TargetError::NonFatal),
         };
         if let Ok(ref inner) = rv {
-            log::info!("read reg {reg_id:?}, {inner:?} bytes at idx {idx:?}");
+            log::debug!("read reg {reg_id:?}, {inner:?} bytes at idx {idx:?}");
         } else {
             log::error!("failed to read reg {reg_id:?}");
         }
@@ -392,7 +392,7 @@ impl target::ext::base::single_register_access::SingleRegisterAccess<()> for Wav
 impl target::ext::base::reverse_exec::ReverseCont<()> for Waver {
     fn reverse_cont(&mut self) -> Result<(), Self::Error> {
         // FIXME: actually implement reverse step
-        log::info!(
+        log::debug!(
             "FIXME: Not actually reverse-continuing. Performing forwards continue instead..."
         );
         self.exec_mode = ExecMode::Continue;
@@ -404,7 +404,7 @@ impl target::ext::base::reverse_exec::ReverseStep<()> for Waver {
     fn reverse_step(&mut self, _tid: ()) -> Result<(), Self::Error> {
         // FIXME: actually implement reverse step
 
-        log::info!(
+        log::debug!(
             "FIXME: Not actually reverse-stepping. Performing single forwards step instead..."
         );
         self.exec_mode = ExecMode::Step;
@@ -421,17 +421,17 @@ impl target::ext::base::singlethread::SingleThreadRangeStepping for Waver {
 
 impl target::ext::extended_mode::ExtendedMode for Waver {
     fn kill(&mut self, pid: Option<Pid>) -> TargetResult<ShouldTerminate, Self> {
-        log::info!("GDB sent a kill request for pid {pid:?}");
+        log::debug!("GDB sent a kill request for pid {pid:?}");
         Ok(ShouldTerminate::No)
     }
 
     fn restart(&mut self) -> Result<(), Self::Error> {
-        log::info!("GDB sent a restart request");
+        log::debug!("GDB sent a restart request");
         Ok(())
     }
 
     fn attach(&mut self, pid: Pid) -> TargetResult<(), Self> {
-        log::info!("GDB attached to a process with PID {pid}");
+        log::debug!("GDB attached to a process with PID {pid}");
         // stub implementation: just report the same code, but running under a
         // different pid.
 
@@ -453,7 +453,7 @@ impl target::ext::extended_mode::ExtendedMode for Waver {
             .map(|raw| core::str::from_utf8(raw).map_err(drop))
             .collect::<Result<Vec<_>, _>>()?;
 
-        log::info!("GDB tried to run a new process with filename {filename:?}, and args {args:?}");
+        log::debug!("GDB tried to run a new process with filename {filename:?}, and args {args:?}");
 
         self.reset();
 
@@ -462,7 +462,7 @@ impl target::ext::extended_mode::ExtendedMode for Waver {
     }
 
     fn query_if_attached(&mut self, pid: Pid) -> TargetResult<AttachKind, Self> {
-        log::info!("GDB queried if it was attached to a process with PID {pid}");
+        log::debug!("GDB queried if it was attached to a process with PID {pid}");
         Ok(AttachKind::Attach)
     }
 
@@ -504,7 +504,7 @@ impl target::ext::extended_mode::ExtendedMode for Waver {
 
 impl target::ext::extended_mode::ConfigureAslr for Waver {
     fn cfg_aslr(&mut self, enabled: bool) -> TargetResult<(), Self> {
-        log::info!("GDB {} ASLR", if enabled { "enabled" } else { "disabled" });
+        log::debug!("GDB {} ASLR", if enabled { "enabled" } else { "disabled" });
         Ok(())
     }
 }
@@ -518,20 +518,20 @@ impl target::ext::extended_mode::ConfigureEnv for Waver {
             Some(raw) => Some(core::str::from_utf8(raw).map_err(drop)?),
         };
 
-        log::info!("GDB tried to set a new env var: {key:?}={val:?}");
+        log::debug!("GDB tried to set a new env var: {key:?}={val:?}");
 
         Ok(())
     }
 
     fn remove_env(&mut self, key: &[u8]) -> TargetResult<(), Self> {
         let key = core::str::from_utf8(key).map_err(drop)?;
-        log::info!("GDB tried to set remove a env var: {key:?}");
+        log::debug!("GDB tried to set remove a env var: {key:?}");
 
         Ok(())
     }
 
     fn reset_env(&mut self) -> TargetResult<(), Self> {
-        log::info!("GDB tried to reset env vars");
+        log::debug!("GDB tried to reset env vars");
 
         Ok(())
     }
@@ -539,7 +539,7 @@ impl target::ext::extended_mode::ConfigureEnv for Waver {
 
 impl target::ext::extended_mode::ConfigureStartupShell for Waver {
     fn cfg_startup_with_shell(&mut self, enabled: bool) -> TargetResult<(), Self> {
-        log::info!(
+        log::debug!(
             "GDB {} startup with shell",
             if enabled { "enabled" } else { "disabled" }
         );
@@ -555,8 +555,8 @@ impl target::ext::extended_mode::ConfigureWorkingDir for Waver {
         };
 
         match dir {
-            None => log::info!("GDB reset the working directory"),
-            Some(dir) => log::info!("GDB set the working directory to {dir:?}"),
+            None => log::debug!("GDB reset the working directory"),
+            Some(dir) => log::debug!("GDB set the working directory to {dir:?}"),
         }
 
         Ok(())

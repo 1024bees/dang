@@ -7,14 +7,13 @@ use std::{
 
 use crate::{
     addr2line_stepper::Addr2lineStepper,
-    commands::{Base, GdbCommand},
+    commands::{Base, GdbCommand, Resume},
     response::{GdbResponse, RawGdbResponse},
     wavetracker::WaveformTracker,
     Packet,
 };
 use goblin::elf::Elf;
 use raki::{Decode, Isa};
-use wellen::simple::Waveform;
 
 pub struct Client {
     strm: TcpStream,
@@ -23,6 +22,13 @@ pub struct Client {
     elf_info: Option<ElfInfo>,
     addr2line_stepper: Option<Addr2lineStepper>,
     pub wave_tracker: Option<WaveformTracker>,
+    cached_state: CachedState,
+}
+
+#[derive(Default, Clone)]
+pub struct CachedState {
+    pc: Option<PC>,
+    time_idx: Option<u64>,
 }
 
 #[derive(Copy, Clone)]
@@ -138,13 +144,14 @@ impl Client {
             addr2line_stepper: None,
             wave_tracker: None,
             response_buffer: Vec::new(),
+            cached_state: CachedState::default(),
         }
     }
 
     /// Drain any remaining data in the response buffer to ensure synchronization
     fn drain_response_buffer(&mut self) {
         if !self.response_buffer.is_empty() {
-            log::info!(
+            log::warn!(
                 "Draining {} bytes from response buffer to maintain synchronization",
                 self.response_buffer.len()
             );
@@ -154,12 +161,12 @@ impl Client {
 
     pub fn send_command(&mut self, packet: &Packet) -> Result<RawGdbResponse, std::io::Error> {
         let pkt = packet.to_finished_packet(self.packet_scratch.as_mut_slice())?;
-        log::info!("Sending packet: {packet:?}");
+
         self.strm.write_all(pkt.0)?;
 
         // Read response with proper packet handling
         let response = self.read_gdb_packet()?;
-        log::info!("Read {} bytes, content is {:?}", response.len(), &response);
+        log::trace!("Read {} bytes, content is {:?}", response.len(), &response);
 
         let _tstr = String::from_utf8_lossy(response.as_slice());
 
@@ -177,7 +184,7 @@ impl Client {
         // First, check if we have a complete packet in the buffer from previous reads
         if let Some((packet, remaining)) = Self::find_first_complete_packet(&self.response_buffer) {
             self.response_buffer = remaining;
-            log::info!(
+            log::debug!(
                 "Returned buffered packet, {} bytes remaining in buffer",
                 self.response_buffer.len()
             );
@@ -199,11 +206,6 @@ impl Client {
                 Ok(n) => {
                     // Add new data to our response buffer
                     self.response_buffer.extend_from_slice(&temp_buffer[..n]);
-                    log::debug!(
-                        "Read {} bytes, buffer now has {} bytes",
-                        n,
-                        self.response_buffer.len()
-                    );
 
                     // Try to extract a complete packet from buffer - only check if we potentially have enough data
                     if self.response_buffer.len() >= 4 {
@@ -212,7 +214,7 @@ impl Client {
                             Self::find_first_complete_packet(&self.response_buffer)
                         {
                             self.response_buffer = remaining;
-                            log::info!(
+                            log::trace!(
                                 "Extracted packet, {} bytes remaining in buffer",
                                 self.response_buffer.len()
                             );
@@ -256,7 +258,7 @@ impl Client {
                 Self::find_first_complete_packet(&self.response_buffer)
             {
                 self.response_buffer = remaining;
-                log::info!(
+                log::trace!(
                     "Extracted packet, {} bytes remaining in buffer",
                     self.response_buffer.len()
                 );
@@ -283,15 +285,63 @@ impl Client {
         let mdata = RawGdbResponse::find_packet_data(buffer).ok();
         if let Some(data) = mdata {
             let remaining = buffer[data.entire_packet_len()..].to_vec();
-            log::debug!(
-                "input buffer is {}, output is {}. remaining is {}",
-                String::from_utf8_lossy(buffer),
-                String::from_utf8_lossy(data.as_slice()),
-                String::from_utf8_lossy(remaining.as_slice())
-            );
             return Some((data, remaining));
         }
         None
+    }
+
+    pub fn step(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
+        let resp = self.send_command_parsed(Packet::Command(GdbCommand::Resume(Resume::Step)))?;
+        if let crate::response::GdbResponse::StopReply { reason, .. } = &resp {
+            match reason {
+                crate::response::StopReason::ProcessExit { code } => {
+                    log::info!("Program exited with code 0x{:02x}", code);
+                    return Ok(false);
+                }
+                crate::response::StopReason::SignalTermination(sig) => {
+                    log::info!("Program terminated with signal 0x{:02x}", sig);
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
+
+        self.cached_state.time_idx = None;
+        self.cached_state.pc = None;
+        self.cached_state.pc = Some(self.get_current_pc()?);
+        self.cached_state.time_idx = Some(self.get_time_idx()?);
+        Ok(true)
+    }
+
+    //returns false
+    pub fn continue_execution(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
+        let resp =
+            self.send_command_parsed(Packet::Command(GdbCommand::Resume(Resume::Continue)))?;
+        self.cached_state.time_idx = None;
+        self.cached_state.pc = None;
+
+        // Check if the program has terminated
+        if let crate::response::GdbResponse::StopReply { reason, .. } = &resp {
+            match reason {
+                crate::response::StopReason::ProcessExit { code } => {
+                    log::info!("Program exited with code 0x{:02x}", code);
+                    return Ok(false);
+                }
+                crate::response::StopReason::SignalTermination(sig) => {
+                    log::info!("Program terminated with signal 0x{:02x}", sig);
+                    return Ok(false);
+                }
+                _ => {
+                    log::info!("cont exec reason: {reason:?}");
+                }
+            }
+        }
+
+        self.cached_state.pc = Some(self.get_current_pc()?);
+        self.cached_state.time_idx = Some(self.get_time_idx()?);
+        log::info!("Continue execution response: {resp:?}");
+
+        Ok(true)
     }
 
     pub fn send_command_parsed(
@@ -300,7 +350,7 @@ impl Client {
     ) -> Result<GdbResponse, Box<dyn std::error::Error>> {
         let raw_response = self.send_command(&packet)?;
         let parsed_response = GdbResponse::parse_packet(raw_response, &packet)?;
-        log::info!("Parsed response: {parsed_response} from input {packet:?}");
+        log::info!("Sent packet: {packet:?} and got response: {parsed_response:?}");
         Ok(parsed_response)
     }
 
@@ -311,19 +361,17 @@ impl Client {
     }
 
     pub fn initialize_gdb_session(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        log::info!("Starting GDB initialization sequence...");
-
         // QStartNoAckMode must return OK per RSP
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QStartNoAckMode)))? {
             GdbResponse::Ack => {
-                log::info!("QStartNoAckMode acknowledged with an ack");
+                log::trace!("QStartNoAckMode acknowledged with an ack");
                 let resp = self.pop_response()?;
                 if resp != GdbResponse::Ok {
                     return Err(format!("Expected Ok for QStartNoAckMode, got: {resp}").into());
                 }
             }
             GdbResponse::Ok => {
-                log::info!("QStartNoAckMode acknowledged with an ok");
+                log::trace!("QStartNoAckMode acknowledged with an ok");
             }
             other => {
                 return Err(format!("Expected Ack for QStartNoAckMode, got: {other}").into());
@@ -339,7 +387,7 @@ impl Client {
                         format!("qSupported missing PacketSize in features: {features:?}").into(),
                     );
                 }
-                log::info!("qSupported features: {features:?}");
+                log::trace!("qSupported features: {features:?}");
             }
             other => {
                 return Err(format!("Expected qSupported feature list, got: {other}").into());
@@ -347,10 +395,10 @@ impl Client {
         }
 
         // qfThreadInfo must return thread list (may be empty) or 'm...' chunk
-        log::info!("About to send qfThreadInfo...");
+
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QfThreadInfo)))? {
             GdbResponse::ThreadInfo { threads, .. } => {
-                log::info!("qfThreadInfo threads: {threads:?}");
+                log::trace!("qfThreadInfo threads: {threads:?}");
             }
             other => {
                 return Err(format!("Expected thread info for qfThreadInfo, got: {other}").into());
@@ -358,10 +406,10 @@ impl Client {
         }
 
         // qsThreadInfo should continue list or return end
-        log::info!("About to send qsThreadInfo...");
+
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QsThreadInfo)))? {
             GdbResponse::ThreadInfo { threads, .. } => {
-                log::info!("qsThreadInfo threads: {threads:?}");
+                log::trace!("qsThreadInfo threads: {threads:?}");
             }
             other => {
                 return Err(format!("Expected thread info for qsThreadInfo, got: {other}").into());
@@ -371,7 +419,7 @@ impl Client {
         // '?' must return a stop reply (Sxx or Txx)
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QuestionMark)))? {
             GdbResponse::StopReply { signal, .. } => {
-                log::info!("Got stop reply with signal 0x{signal:02x}");
+                log::trace!("Got stop reply with signal 0x{signal:02x}");
             }
             other => {
                 return Err(format!("Expected stop reply for '?', got: {other}").into());
@@ -387,7 +435,7 @@ impl Client {
                         data.len()
                     ).into());
                 }
-                log::info!("Register read length OK: {} bytes", data.len());
+                log::trace!("Register read length OK: {} bytes", data.len());
             }
             other => {
                 return Err(format!("Expected RegisterData for 'g' (LowerG), got: {other}").into());
@@ -399,9 +447,12 @@ impl Client {
     }
 
     pub fn get_time_idx(&mut self) -> Result<u64, Box<dyn std::error::Error>> {
+        if let Some(time_idx) = self.cached_state.time_idx {
+            return Ok(time_idx);
+        }
+
         let rv = self
             .send_monitor_command("time_idx")
-            .inspect(|val| println!("{val}"))
             .map(|output| output.trim().parse::<u64>().map_err(|e| e.into()))?;
 
         rv
@@ -422,7 +473,15 @@ impl Client {
         let response = self.send_command_parsed(monitor_packet)?;
 
         match response {
-            crate::response::GdbResponse::MonitorOutput { output } => Ok(output),
+            crate::response::GdbResponse::MonitorOutput { output } => {
+                // Monitor commands send an OK packet after the output
+                // We need to consume it to keep the response buffer clean
+                let ok_response = self.pop_response()?;
+                if ok_response != crate::response::GdbResponse::Ok {
+                    log::warn!("Expected OK after monitor output, got: {ok_response}");
+                }
+                Ok(output)
+            }
             other => Err(format!("Expected monitor output, got: {other}").into()),
         }
     }
@@ -616,6 +675,10 @@ impl Client {
 
     /// Get the current program counter (PC) from registers
     pub fn get_current_pc(&mut self) -> Result<PC, Box<dyn std::error::Error>> {
+        if let Some(pc) = self.cached_state.pc {
+            return Ok(pc);
+        }
+
         // Add a small delay to avoid rapid command sending that can cause response ordering issues
 
         let registers =
@@ -623,7 +686,7 @@ impl Client {
 
         match registers {
             crate::response::GdbResponse::RegisterData { data } => {
-                log::debug!("Got RegisterData with {} bytes", data.len());
+                log::trace!("Got RegisterData with {} bytes", data.len());
                 if data.len() < 132 {
                     return Err(format!(
                         "Register data too short to contain PC (got {} bytes, need 132)",
@@ -654,11 +717,11 @@ impl Client {
         // Get current PC using the dedicated method
         let pc = self.get_current_pc()?;
 
-        log::info!("Program Counter (PC): 0x{pc}");
+        log::debug!("Program Counter (PC): 0x{pc}");
 
         // Check if we have symbol information
         if let Some((symbol, offset)) = self.find_symbol_at_address(pc.as_u64()) {
-            log::info!("Current function: {} + 0x{:x}", symbol.name, offset);
+            log::debug!("Current function: {} + 0x{:x}", symbol.name, offset);
         }
 
         // Get instruction bytes directly from ELF binary (16 bytes = 4 instructions)
@@ -687,7 +750,7 @@ impl Client {
             let u16inst = uu16
                 .decode(Isa::Rv32)
                 .inspect_err(|e| log::error!("u16 err is {e:?}, 0x{uu16:x}"))
-                .inspect(|arg| log::info!("{arg}"))
+                .inspect(|arg| log::debug!("{arg}"))
                 .map(|val| Instruction(val, pc.add(start as u32)))
                 .ok();
             let u32inst = uu32
@@ -708,7 +771,7 @@ impl Client {
                     if start == 0 {
                         panic!("THERE S A BOMB IN MY CAR");
                     }
-                    log::info!("Done")
+                    log::debug!("Done")
                 }
             }
         }
@@ -989,7 +1052,7 @@ mod tests {
                 &packet_type,
             );
 
-            log::info!(
+            log::debug!(
                 "Test case {}: data length = {}, result = {:?}",
                 i,
                 register_data.len(),
@@ -999,10 +1062,10 @@ mod tests {
             match response {
                 Ok(GdbResponse::RegisterData { data }) => {
                     assert_eq!(data.len(), register_data.len());
-                    log::info!("✓ Correctly parsed as RegisterData");
+                    log::debug!("✓ Correctly parsed as RegisterData");
                 }
                 Ok(GdbResponse::Empty) if register_data.is_empty() => {
-                    log::info!("✓ Empty register data correctly parsed as Empty");
+                    log::debug!("✓ Empty register data correctly parsed as Empty");
                 }
                 Ok(GdbResponse::MemoryData { data: _ }) => {
                     panic!("⚠ Parsed as MemoryData instead of RegisterData (length={}, divisible by 4={})", 
@@ -1046,6 +1109,119 @@ mod tests {
         }
 
         assert!(time_idx_output.is_ok());
+
+        // Kill the handle by not waiting for it to complete
+        drop(handle);
+    }
+
+    #[test]
+    fn test_time_idx_then_pc() {
+        crate::init_test_logger();
+        let (listener, port) = create_test_listener();
+
+        // Start dang GDB stub in a separate thread
+        let handle = start_dang_instance(listener);
+
+        // Give the server time to start
+        sleep(Duration::from_millis(1000));
+
+        // Connect with the client to actual dang instance
+        let mut client = Client::new_with_port(port);
+        sleep(Duration::from_millis(200)); // Increased delay for stability
+
+        client
+            .initialize_gdb_session()
+            .expect("failed to init gdb session for time_idx_then_pc test");
+        sleep(Duration::from_millis(100)); // Increased delay for stability
+
+        // Call get_time_idx first
+        let time_idx = client.get_time_idx().expect("Failed to get time_idx");
+        log::info!("Got time_idx: {}", time_idx);
+
+        // Now try to get PC multiple times
+        for i in 0..3 {
+            match client.get_current_pc() {
+                Ok(pc) => {
+                    log::info!("PC attempt {}: 0x{:x}", i + 1, pc.as_u32());
+                    assert!(pc.nz(), "PC should be non-zero");
+                }
+                Err(e) => {
+                    panic!(
+                        "Failed to get PC on attempt {} after get_time_idx: {:?}",
+                        i + 1,
+                        e
+                    );
+                }
+            }
+        }
+
+        // Kill the handle by not waiting for it to complete
+        drop(handle);
+    }
+
+    #[test]
+    fn test_continue_past_program_end() {
+        crate::init_test_logger();
+        let (listener, port) = create_test_listener();
+
+        // Start dang GDB stub in a separate thread
+        let handle = start_dang_instance(listener);
+
+        // Give the server time to start
+        sleep(Duration::from_millis(1000));
+
+        // Connect with the client to actual dang instance
+        let mut client = Client::new_with_port(port);
+        sleep(Duration::from_millis(200));
+
+        client
+            .initialize_gdb_session()
+            .expect("failed to init gdb session for continue_past_end test");
+        sleep(Duration::from_millis(100));
+
+        client.load_elf_info().expect("Failed to load elf info");
+
+        // Continue execution repeatedly until we reach the end
+        // The test program should eventually finish
+        let mut last_time_idx = 0;
+        let mut same_time_count = 0;
+
+        for i in 0..100 {
+            log::info!("Continue attempt {}", i + 1);
+
+            let result = client.continue_execution();
+
+            match result {
+                Ok(false) => {
+                    log::info!("Program has reached the end");
+                }
+
+                Ok(true) => {
+                    log::info!("Program is still running");
+                }
+                Err(e) => {
+                    log::info!("Continue failed (expected at program end): {:?}", e);
+                    break;
+                }
+            }
+        }
+
+        // Now try to continue past the end - this is where the bug should occur
+        log::info!("Attempting to continue past program end...");
+        let result = client.continue_execution();
+
+        match result {
+            Ok(true) => {
+                panic!("WTF we didnt terminate?");
+            }
+            Ok(false) => {
+                log::info!("We terminated");
+            }
+            Err(e) => {
+                log::info!("Continue past end failed with error: {:?}", e);
+                // This is expected - the test should document the error behavior
+            }
+        }
 
         // Kill the handle by not waiting for it to complete
         drop(handle);

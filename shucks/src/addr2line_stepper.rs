@@ -22,8 +22,7 @@ pub struct Addr2lineStepper {
     dwarf: gimli::Dwarf<gimli::EndianSlice<'static, gimli::RunTimeEndian>>,
     load_bias: u64,
     source_cache: Mutex<HashMap<PathBuf, Arc<Vec<String>>>>,
-    path_cache: Mutex<HashMap<PathBuf, PathBuf>>, // Cache for search_for_path results
-    _section_data: Vec<Box<[u8]>>,                // Keep section data alive
+    _section_data: Vec<Box<[u8]>>, // Keep section data alive
 }
 
 impl Addr2lineStepper {
@@ -101,9 +100,7 @@ impl Addr2lineStepper {
             ctx,
             dwarf,
             load_bias,
-
             source_cache: Mutex::new(HashMap::new()),
-            path_cache: Mutex::new(HashMap::new()), // Initialize the path cache
             _section_data: section_data,
         })
     }

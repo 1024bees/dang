@@ -24,6 +24,7 @@ pywellen = { git = "https://github.com/1024bees/wellen.git", branch = "signal-bu
 anyhow = "1"
 object = "0.36"
 addr2line = "0.24"
+argh = "0.1"
 
 [profile.release]
 debug = true

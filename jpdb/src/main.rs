@@ -2,13 +2,22 @@ use std::{
     collections::VecDeque,
     io,
     net::TcpListener,
+    path::Path,
     sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
 
+mod cli;
+mod model;
 mod user_commands;
+mod view;
+mod wcp_client;
+
+use model::DebuggerModel;
 use user_commands::CommandRegistry;
+use view::ViewState;
+use wcp_client::WcpClient;
 
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -20,13 +29,10 @@ use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem},
+    widgets::{Block, Borders, List, ListItem, Scrollbar},
     Frame, Terminal,
 };
-use shucks::{
-    commands::{GdbCommand, Resume},
-    Client, Packet, Var,
-};
+use shucks::{Client, Var};
 
 // Custom logger that captures messages for ratatui display
 #[derive(Debug, Clone)]
@@ -78,14 +84,20 @@ impl log::Log for AppLogger {
     fn flush(&self) {}
 }
 
-pub struct AddsigState {
+pub struct AddSigState {
     active: bool,
     input: String,
     matches: Vec<(Var, String)>,
     selected_index: usize,
 }
 
-impl AddsigState {
+impl Default for AddSigState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AddSigState {
     pub fn new() -> Self {
         Self {
             active: false,
@@ -124,7 +136,9 @@ impl AddsigState {
 
     pub fn set_matches(&mut self, matches: Vec<(Var, String)>) {
         self.matches = matches.into_iter().take(10).collect(); // Take top 10
-        self.selected_index = self.selected_index.min(self.matches.len().saturating_sub(1));
+        self.selected_index = self
+            .selected_index
+            .min(self.matches.len().saturating_sub(1));
     }
 
     pub fn get_matches(&self) -> &[(Var, String)] {
@@ -156,17 +170,71 @@ impl AddsigState {
     }
 }
 
+pub struct HelpModalState {
+    active: bool,
+    content: Vec<String>,
+    scroll_offset: usize,
+}
+
+impl Default for HelpModalState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HelpModalState {
+    pub fn new() -> Self {
+        Self {
+            active: false,
+            content: Vec::new(),
+            scroll_offset: 0,
+        }
+    }
+
+    pub fn activate(&mut self, content: Vec<String>) {
+        self.active = true;
+        self.content = content;
+        self.scroll_offset = 0;
+    }
+
+    pub fn deactivate(&mut self) {
+        self.active = false;
+        self.content.clear();
+        self.scroll_offset = 0;
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub fn scroll_up(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_add(lines);
+    }
+
+    pub fn scroll_down(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+    }
+
+    pub fn get_content(&self) -> &[String] {
+        &self.content
+    }
+
+    pub fn get_scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+}
+
 pub struct App {
     pub should_quit: bool,
-
     input_buffer: String,
     pub command_history: Vec<String>,
-    pub instruction_output: Vec<String>,
-    pub shucks_client: Client,
+    model: DebuggerModel,
+    view_state: ViewState,
     _dang_thread_handle: thread::JoinHandle<()>,
     scroll_offset: usize,
     // Debug panel state
     show_debug_panel: bool,
+    debug_scroll_offset: usize, // Add scroll offset for debug panel
     // Split view state
     show_split_view: bool,
     log_buffer: Arc<Mutex<VecDeque<LogMessage>>>,
@@ -176,11 +244,18 @@ pub struct App {
     user_command_history: Vec<String>,
     history_index: Option<usize>,
     // Addsig floating window state
-    addsig_state: AddsigState,
+    addsig_state: AddSigState,
+    // Help modal state
+    help_modal_state: HelpModalState,
+    // WCP client for Surfer integration
+    wcp_client: Option<WcpClient>,
+    surfer_process: Option<std::process::Child>,
+    // CLI arguments for reference
+    cli_args: cli::JpdbArgs,
 }
 
-impl Default for App {
-    fn default() -> App {
+impl App {
+    fn new(cli_args: cli::JpdbArgs) -> App {
         // Initialize custom logging system
         let (logger, log_buffer) = AppLogger::new();
         log::set_boxed_logger(Box::new(logger))
@@ -194,18 +269,13 @@ impl Default for App {
             .expect("Failed to get local addr")
             .port();
 
+        // Clone paths for thread
+        let wave_path = cli_args.wave_path.clone();
+        let mapping_path = cli_args.mapping_path.clone();
+        let elf_path = cli_args.elf.clone();
+
         // Start dang GDB stub in a separate thread
         let dang_handle = thread::spawn(move || {
-            let workspace_root = std::env::current_dir()
-                .expect("Failed to get current dir")
-                .parent()
-                .expect("Failed to get parent dir")
-                .to_path_buf();
-
-            let wave_path = workspace_root.join("test_data/ibex/sim.fst");
-            let mapping_path = workspace_root.join("test_data/ibex/signal_get.py");
-            let elf_path = workspace_root.join("test_data/ibex/hello_test.elf");
-
             dang::start_with_args_and_listener_silent(wave_path, mapping_path, elf_path, listener)
                 .expect("Failed to start dang");
         });
@@ -215,53 +285,98 @@ impl Default for App {
 
         // Create shucks client connected to dang
         let mut shucks_client = Client::new_with_port(port);
-        let workspace_root = std::env::current_dir()
-            .expect("Failed to get current dir")
-            .parent()
-            .expect("Failed to get parent dir")
-            .to_path_buf();
-        let wave_path = workspace_root.join("test_data/ibex/sim.fst");
-        shucks_client
-            .load_waveform(wave_path)
-            .expect("Failed to load waveform");
 
         shucks_client.initialize_gdb_session().expect("");
         let _ = shucks_client.load_elf_info();
-
+        shucks_client
+            .load_waveform(cli_args.wave_path.clone())
+            .expect("Failed to load waveform");
         thread::sleep(Duration::from_millis(300));
 
-        let mut app = App {
+        let mut model = DebuggerModel::new(shucks_client);
+        let mut view_state = ViewState::default();
+
+        // Initialize views
+        if let Ok(execution) = model.fetch_execution_snapshot() {
+            view_state.execution_lines = execution.summary_lines;
+            view_state.instruction_lines = execution.instruction_lines;
+        } else {
+            view_state.execution_lines = vec!["Failed to load execution info".to_string()];
+            view_state.instruction_lines = vec!["Failed to load execution info".to_string()];
+        }
+
+        if let Ok(source) = model.fetch_source_snapshot() {
+            view_state.source_lines = source.lines;
+        } else {
+            view_state.source_lines = vec!["Failed to load source info".to_string()];
+        }
+
+        if let Ok(signals) = model.fetch_signal_snapshot() {
+            view_state.signal_lines = signals.lines;
+        } else {
+            view_state.signal_lines = vec!["Failed to load signal info".to_string()];
+        }
+
+        App {
             should_quit: false,
             input_buffer: String::new(),
             command_history: Vec::new(),
-            instruction_output: Vec::new(),
-            shucks_client,
+            model,
+            view_state,
             _dang_thread_handle: dang_handle,
             scroll_offset: 0,
             show_debug_panel: false,
-            show_split_view: false,
+            debug_scroll_offset: 0, // Initialize debug scroll offset
+            show_split_view: true,
             log_buffer,
             last_command: None,
             user_command_history: Vec::new(),
             history_index: None,
-            addsig_state: AddsigState::new(),
-        };
-
-        // Show initial instructions when first connecting
-        app.add_execution_info();
-
-        app
+            addsig_state: AddSigState::new(),
+            help_modal_state: HelpModalState::new(),
+            wcp_client: None,
+            surfer_process: None,
+            cli_args,
+        }
     }
-}
 
-impl App {
     fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
         loop {
             terminal.draw(|f| self.ui(f))?;
 
             if let Event::Key(key) = event::read()? {
-                // Check if we're in addsig mode first
-                if self.addsig_state.is_active() {
+                // Check if we're in help modal mode first
+                if self.help_modal_state.is_active() {
+                    match key.code {
+                        KeyCode::Up => {
+                            self.help_modal_state.scroll_up(1);
+                        }
+                        KeyCode::Down => {
+                            self.help_modal_state.scroll_down(1);
+                        }
+                        KeyCode::PageUp => {
+                            self.help_modal_state.scroll_up(5);
+                        }
+                        KeyCode::PageDown => {
+                            self.help_modal_state.scroll_down(5);
+                        }
+                        KeyCode::Home => {
+                            // Scroll to top
+                            let content_len = self.help_modal_state.get_content().len();
+                            self.help_modal_state.scroll_up(content_len);
+                        }
+                        KeyCode::End => {
+                            // Scroll to bottom
+                            self.help_modal_state.scroll_down(usize::MAX);
+                        }
+                        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                            // Close help modal
+                            self.help_modal_state.deactivate();
+                        }
+                        _ => {} // Ignore other keys in help modal mode
+                    }
+                } else if self.addsig_state.is_active() {
+                    // Check if we're in addsig mode
                     match key.code {
                         KeyCode::Char(c) => {
                             // Add character to search input
@@ -269,11 +384,11 @@ impl App {
                             new_input.push(c);
                             self.addsig_state.update_search(new_input);
 
-                            // Update fuzzy matches
-                            if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker {
-                                let matches = wave_tracker.fuzzy_match_var(self.addsig_state.get_input());
-                                self.addsig_state.set_matches(matches);
-                            }
+                            // Update fuzzy matches via model
+                            let matches = self
+                                .model
+                                .fuzzy_match_signals(self.addsig_state.get_input());
+                            self.addsig_state.set_matches(matches);
                         }
                         KeyCode::Backspace => {
                             // Remove character from search input
@@ -281,11 +396,11 @@ impl App {
                             new_input.pop();
                             self.addsig_state.update_search(new_input);
 
-                            // Update fuzzy matches
-                            if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker {
-                                let matches = wave_tracker.fuzzy_match_var(self.addsig_state.get_input());
-                                self.addsig_state.set_matches(matches);
-                            }
+                            // Update fuzzy matches via model
+                            let matches = self
+                                .model
+                                .fuzzy_match_signals(self.addsig_state.get_input());
+                            self.addsig_state.set_matches(matches);
                         }
                         KeyCode::Up => {
                             self.addsig_state.select_prev();
@@ -296,9 +411,13 @@ impl App {
                         KeyCode::Enter => {
                             // Select the signal and exit addsig mode
                             if let Some((var, _)) = self.addsig_state.get_selected().cloned() {
-                                if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker {
-                                    wave_tracker.select_signal(var);
+                                self.model.select_signal(var);
+                                if let Some(ref mut wcp) = self.wcp_client {
+                                    if let Some(path) = self.model.most_recent_var_path() {
+                                        let _ = wcp.add_signal(path.as_str());
+                                    }
                                 }
+                                self.refresh_signal_view();
                             }
                             self.addsig_state.deactivate();
                         }
@@ -311,76 +430,98 @@ impl App {
                 } else {
                     // Normal key handling when not in addsig mode
                     match key.code {
-                    KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        // Ctrl+D: Quit the application
-                        self.should_quit = true;
-                    }
-                    KeyCode::Char('l') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        // Ctrl+L: Clear screen
-                        self.command_history.clear();
-                        self.scroll_offset = 0;
-                    }
-                    
-                    
-                    
-                    
-                    KeyCode::Char(c) => {
-                        self.input_buffer.push(c);
-                        // Reset history navigation when user types
-                        self.history_index = None;
-                    }
-                    KeyCode::Enter => {
-                        self.process_command();
-                        self.input_buffer.clear();
-                        // Auto-scroll to bottom when new command is entered
-                        self.scroll_offset = 0;
-                    }
-                    KeyCode::Backspace => {
-                        self.input_buffer.pop();
-                        // Reset history navigation when user modifies input
-                        self.history_index = None;
-                    }
-                    KeyCode::Up => {
-                        // Navigate to previous command in history
-                        if !self.user_command_history.is_empty() {
-                            let new_index = match self.history_index {
-                                None => self.user_command_history.len() - 1,
-                                Some(index) => {
-                                    if index > 0 {
-                                        index - 1
-                                    } else {
-                                        // Wrap to newest (end of history)
-                                        self.user_command_history.len() - 1
-                                    }
-                                }
-                            };
-                            self.history_index = Some(new_index);
-                            self.input_buffer = self.user_command_history[new_index].clone();
+                        KeyCode::Char('d')
+                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                        {
+                            // Ctrl+D: Quit the application
+                            self.should_quit = true;
                         }
-                    }
-                    KeyCode::Down => {
-                        // Navigate to next (more recent) command in history
-                        if !self.user_command_history.is_empty() {
-                            match self.history_index {
-                                None => {
-                                    // Do nothing if not currently navigating history
-                                }
-                                Some(index) => {
-                                    if index < self.user_command_history.len() - 1 {
-                                        let new_index = index + 1;
-                                        self.history_index = Some(new_index);
-                                        self.input_buffer =
-                                            self.user_command_history[new_index].clone();
-                                    } else {
-                                        // Wrap to oldest (beginning of history)
-                                        self.history_index = Some(0);
-                                        self.input_buffer = self.user_command_history[0].clone();
+                        KeyCode::Char('l')
+                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                        {
+                            // Ctrl+L: Clear screen
+                            self.command_history.clear();
+                            self.scroll_offset = 0;
+                        }
+
+                        // Debug panel scrolling (only when debug panel is visible)
+                        KeyCode::PageUp if self.show_debug_panel => {
+                            // Scroll up in debug panel
+                            self.debug_scroll_offset = self.debug_scroll_offset.saturating_add(5);
+                        }
+                        KeyCode::PageDown if self.show_debug_panel => {
+                            // Scroll down in debug panel
+                            self.debug_scroll_offset = self.debug_scroll_offset.saturating_sub(5);
+                        }
+                        KeyCode::Home if self.show_debug_panel => {
+                            // Go to top of debug panel
+                            if let Ok(buffer) = self.log_buffer.lock() {
+                                self.debug_scroll_offset = buffer.len().saturating_sub(1);
+                            }
+                        }
+                        KeyCode::End if self.show_debug_panel => {
+                            // Go to bottom of debug panel
+                            self.debug_scroll_offset = 0;
+                        }
+
+                        KeyCode::Char(c) => {
+                            self.input_buffer.push(c);
+                            // Reset history navigation when user types
+                            self.history_index = None;
+                        }
+                        KeyCode::Enter => {
+                            self.process_command();
+                            self.input_buffer.clear();
+                            // Auto-scroll to bottom when new command is entered
+                            self.scroll_offset = 0;
+                        }
+                        KeyCode::Backspace => {
+                            self.input_buffer.pop();
+                            // Reset history navigation when user modifies input
+                            self.history_index = None;
+                        }
+                        KeyCode::Up => {
+                            // Navigate to previous command in history
+                            if !self.user_command_history.is_empty() {
+                                let new_index = match self.history_index {
+                                    None => self.user_command_history.len() - 1,
+                                    Some(index) => {
+                                        if index > 0 {
+                                            index - 1
+                                        } else {
+                                            // Wrap to newest (end of history)
+                                            self.user_command_history.len() - 1
+                                        }
+                                    }
+                                };
+                                self.history_index = Some(new_index);
+                                self.input_buffer = self.user_command_history[new_index].clone();
+                            }
+                        }
+                        KeyCode::Down => {
+                            // Navigate to next (more recent) command in history
+                            if !self.user_command_history.is_empty() {
+                                match self.history_index {
+                                    None => {
+                                        // Do nothing if not currently navigating history
+                                    }
+                                    Some(index) => {
+                                        if index < self.user_command_history.len() - 1 {
+                                            let new_index = index + 1;
+                                            self.history_index = Some(new_index);
+                                            self.input_buffer =
+                                                self.user_command_history[new_index].clone();
+                                        } else {
+                                            // Wrap to oldest (beginning of history)
+                                            self.history_index = Some(0);
+                                            self.input_buffer =
+                                                self.user_command_history[0].clone();
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    _ => {}
+                        _ => {}
                     }
                 }
             }
@@ -393,12 +534,16 @@ impl App {
     }
 
     pub fn step_next(&mut self) {
-        // Send step command to shucks/dang instead of using hardcoded logic
-        if let Err(e) = self
-            .shucks_client
-            .send_command_parsed(Packet::Command(GdbCommand::Resume(Resume::Step)))
-        {
+        if let Err(e) = self.model.step() {
             self.command_history.push(format!("Error stepping: {e}"));
+            return;
+        }
+
+        self.refresh_all_views();
+
+        // Sync waveform position if connected to Surfer
+        if let Err(e) = self.sync_waveform_position() {
+            log::warn!("Failed to sync waveform position: {e}");
         }
     }
 
@@ -448,52 +593,125 @@ impl App {
         }
     }
 
-    pub fn add_execution_info(&mut self) {
-        log::debug!("Adding execution info");
-        self.instruction_output.clear(); // Clear previous instruction output
-        self.instruction_output
-            .push("Process 1 stopped".to_string());
-        self.instruction_output
-            .push("* thread #1, stop reason = instruction step over".to_string());
-
-        // Get current PC from shucks
-        log::debug!("About to get current PC");
-        match self.shucks_client.get_current_pc() {
-            Ok(current_pc) => {
-                log::debug!("Successfully got current PC: 0x{current_pc}");
-                let frame_info = format!("    frame #0: 0x{current_pc}");
-                self.instruction_output.push(frame_info);
-
-                // Try to get current instruction info from shucks
-
-                if let Ok(insts) = self.shucks_client.get_current_and_next_inst() {
-                    // Only show arrow for the first instruction (current PC)
-                    for (i, ainst) in insts.iter().enumerate() {
-                        let inst_pc = ainst.pc().as_u32();
-                        if i == 0 {
-                            // First instruction gets the arrow
-                            self.instruction_output
-                                .push(format!("->  0x{inst_pc:x}: {ainst}"));
-                        } else {
-                            // Subsequent instructions without arrow
-                            self.instruction_output
-                                .push(format!("    0x{inst_pc:x}: {ainst}"));
-                        }
-                    }
-                } else {
-                    self.instruction_output
-                        .push(format!("->  0x{current_pc}: <unable to get instructions>"));
-                }
-            }
-            Err(e) => {
-                log::error!("Failed to get current PC: {e}");
-                self.instruction_output
-                    .push(format!("Error getting PC: {e}"));
-            }
+    fn refresh_all_views(&mut self) {
+        if let Ok(execution) = self.model.fetch_execution_snapshot() {
+            self.view_state.execution_lines = execution.summary_lines;
+            self.view_state.instruction_lines = execution.instruction_lines;
+        } else {
+            self.view_state.execution_lines = vec!["Failed to load execution info".to_string()];
+            self.view_state.instruction_lines = vec!["Failed to load execution info".to_string()];
         }
 
-        self.instruction_output
-            .push("Target 0: (No executable module.) stopped.".to_string());
+        if let Ok(source) = self.model.fetch_source_snapshot() {
+            self.view_state.source_lines = source.lines;
+        } else {
+            self.view_state.source_lines = vec!["Failed to load source info".to_string()];
+        }
+
+        if let Ok(signals) = self.model.fetch_signal_snapshot() {
+            self.view_state.signal_lines = signals.lines;
+        } else {
+            self.view_state.signal_lines = vec!["Failed to load signal info".to_string()];
+        }
+    }
+
+    fn refresh_signal_view(&mut self) {
+        match self.model.fetch_signal_snapshot() {
+            Ok(snapshot) => self.view_state.signal_lines = snapshot.lines,
+            Err(err) => {
+                self.view_state.signal_lines = vec![format!("Error getting signal info: {err}")];
+            }
+        }
+    }
+
+    pub fn set_breakpoint(&mut self, address: u32) -> Result<(), String> {
+        self.model.set_breakpoint(address)
+    }
+
+    pub fn set_breakpoint_at_line(&mut self, file: &str, line: u64) -> Result<Vec<u32>, String> {
+        self.model.set_breakpoint_at_line(file, line)
+    }
+
+    pub fn continue_execution(&mut self) -> Result<(), String> {
+        self.model.continue_execution()?;
+
+        // Sync waveform position if connected to Surfer
+        if let Err(e) = self.sync_waveform_position() {
+            log::warn!("Failed to sync waveform position: {e}");
+        }
+
+        Ok(())
+    }
+
+    pub fn invalidate_time_idx_cache(&mut self) {
+        self.model.invalidate_time_index();
+    }
+
+    /// Launch Surfer waveform viewer and connect to it via WCP
+    pub fn launch_surfer(&mut self, wave_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        use std::process::{Command, Stdio};
+
+        //TODO: get a random port, i am lazy
+        let wcp_port = 54321;
+        let mut tmp_script = std::env::temp_dir();
+        tmp_script.push("surfer_commands.sucl");
+
+        std::fs::write(tmp_script.as_path(), "wcp_server_start")?;
+
+        let child = Command::new("surfer")
+            .arg(wave_path.to_str().ok_or("Invalid wave path")?)
+            .arg("--script")
+            .arg(
+                tmp_script
+                    .as_os_str()
+                    .to_str()
+                    .ok_or("Invalid script path")?,
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        log::info!("Launched Surfer with PID {}", child.id());
+
+        self.surfer_process = Some(child);
+
+        // Give Surfer time to start
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+
+        // Connect to Surfer via WCP
+        self.connect_to_surfer(&format!("127.0.0.1:{wcp_port}"))?;
+
+        Ok(())
+    }
+
+    /// Connect to a running Surfer instance via WCP
+    pub fn connect_to_surfer(&mut self, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let client = WcpClient::connect(addr)?;
+        self.wcp_client = Some(client);
+        log::info!("Connected to Surfer via WCP at {addr}");
+
+        // Sync current waveform state
+        self.sync_waveform_position()?;
+
+        Ok(())
+    }
+
+    /// Sync the waveform viewer to the current simulation time
+    fn sync_waveform_position(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(ref mut wcp) = self.wcp_client {
+            if let Ok(time_idx) = self.model.get_time_idx() {
+                let time = self
+                    .model
+                    .client
+                    .wave_tracker
+                    .as_ref()
+                    .unwrap()
+                    .get_current_time(time_idx as shucks::TimeTableIdx);
+
+                wcp.goto_time(time)?;
+            }
+        }
+        Ok(())
     }
 
     fn ui(&mut self, f: &mut Frame) {
@@ -522,6 +740,11 @@ impl App {
         if self.addsig_state.is_active() {
             self.render_addsig_popup(f, f.area());
         }
+
+        // Render help modal on top if active
+        if self.help_modal_state.is_active() {
+            self.render_help_modal(f, f.area());
+        }
     }
 
     fn render_combined_output(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
@@ -540,7 +763,8 @@ impl App {
 
     fn render_instruction_panel_combined(&self, f: &mut Frame, area: ratatui::layout::Rect) {
         let items: Vec<ListItem> = self
-            .instruction_output
+            .view_state
+            .execution_lines
             .iter()
             .map(|line| {
                 let style = if line.starts_with("->") {
@@ -637,20 +861,30 @@ impl App {
     }
 
     fn render_debug_panel(&self, f: &mut Frame, area: ratatui::layout::Rect) {
-        // Get log messages from buffer - clone them to avoid lifetime issues
-        let log_messages = if let Ok(buffer) = self.log_buffer.lock() {
-            buffer
-                .iter()
-                .rev()
-                .take(area.height.saturating_sub(2) as usize)
-                .rev()
-                .cloned()
-                .collect::<Vec<_>>()
+        // Get all log messages from buffer
+        let all_log_messages = if let Ok(buffer) = self.log_buffer.lock() {
+            buffer.iter().cloned().collect::<Vec<_>>()
         } else {
             Vec::new()
         };
 
-        let items: Vec<ListItem> = log_messages
+        let available_height = area.height.saturating_sub(2) as usize; // Account for borders
+        let total_messages = all_log_messages.len();
+
+        // Calculate which messages to show based on scroll offset
+        let visible_messages = if total_messages > available_height {
+            let max_scroll = total_messages.saturating_sub(available_height);
+            let actual_scroll = self.debug_scroll_offset.min(max_scroll);
+            let start_idx = total_messages.saturating_sub(available_height + actual_scroll);
+            let end_idx = start_idx + available_height;
+
+            all_log_messages[start_idx..end_idx.min(total_messages)].to_vec()
+        } else {
+            // If all messages fit, show them all
+            all_log_messages
+        };
+
+        let items: Vec<ListItem> = visible_messages
             .iter()
             .map(|msg| {
                 let style = match msg.level {
@@ -668,10 +902,35 @@ impl App {
         let debug_panel = List::new(items).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Debug (d to toggle)"),
+                .title("Debug (d to toggle, PgUp/PgDn to scroll, Home/End)"),
         );
 
         f.render_widget(debug_panel, area);
+
+        // Add scrollbar if there are more messages than can fit
+        if total_messages > available_height {
+            let scrollbar_area = Rect {
+                x: area.x + area.width - 1,
+                y: area.y + 1,
+                width: 1,
+                height: area.height - 2,
+            };
+
+            let max_scroll = total_messages.saturating_sub(available_height);
+            let scrollbar = Scrollbar::default()
+                .orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"));
+
+            let mut scrollbar_state = ratatui::widgets::ScrollbarState::new(total_messages)
+                .position(
+                    total_messages.saturating_sub(
+                        available_height + self.debug_scroll_offset.min(max_scroll),
+                    ),
+                );
+
+            f.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+        }
     }
 
     fn render_split_view(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
@@ -681,40 +940,29 @@ impl App {
             .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
             .split(area);
 
-        // Split the top area horizontally: instructions (left) and source code (right)
+        // Split the top area horizontally: instructions (left), source code (middle), signals (right)
         let panel_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+            .constraints(
+                [
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(40),
+                ]
+                .as_ref(),
+            )
             .split(main_chunks[0]);
 
         self.render_instruction_pane(f, panel_chunks[0]);
         self.render_source_pane(f, panel_chunks[1]);
+        self.render_signal_panel(f, panel_chunks[2]);
         self.render_command_bar(f, main_chunks[1]);
     }
 
     fn render_instruction_pane(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
-        // Get current and next instructions
-        let mut instruction_lines = Vec::new();
-
-        match self.shucks_client.get_current_and_next_inst() {
-            Ok(instructions) => {
-                for (i, inst) in instructions.iter().enumerate() {
-                    let pc = inst.pc().as_u32();
-                    if i == 0 {
-                        // Current instruction with arrow
-                        instruction_lines.push(format!("->  0x{pc:x}: {inst}"));
-                    } else {
-                        // Next instructions
-                        instruction_lines.push(format!("    0x{pc:x}: {inst}"));
-                    }
-                }
-            }
-            Err(e) => {
-                instruction_lines.push(format!("Error: {e}"));
-            }
-        }
-
-        let items: Vec<ListItem> = instruction_lines
+        let items: Vec<ListItem> = self
+            .view_state
+            .instruction_lines
             .iter()
             .map(|line| {
                 let style = if line.starts_with("->") {
@@ -740,60 +988,9 @@ impl App {
     }
 
     fn render_source_pane(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
-        let mut source_lines = Vec::new();
-
-        // Get current source line
-        match self.shucks_client.get_current_source_line() {
-            Ok(Some(current_line)) => {
-                source_lines.push(format!(
-                    "{}:{}",
-                    current_line
-                        .path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("unknown"),
-                    current_line.line
-                ));
-                source_lines.push("".to_string());
-
-                // Show current line with arrow
-                if let Some(ref text) = current_line.text {
-                    source_lines.push(format!("-> {}: {}", current_line.line, text));
-                } else {
-                    source_lines.push(format!("-> {}: <source not available>", current_line.line));
-                }
-
-                // Get next 3 consecutive source lines from the same file
-                match self
-                    .shucks_client
-                    .get_consecutive_source_lines_after_current(3)
-                {
-                    Ok(next_lines) => {
-                        for line in next_lines {
-                            if let Some(ref text) = line.text {
-                                source_lines.push(format!("   {}: {}", line.line, text));
-                            } else {
-                                source_lines
-                                    .push(format!("   {}: <source not available>", line.line));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        source_lines.push(format!("Error getting next lines: {e}"));
-                    }
-                }
-            }
-            Ok(None) => {
-                source_lines.push("Source Code:".to_string());
-                source_lines.push("No debug information available".to_string());
-            }
-            Err(e) => {
-                source_lines.push("Source Code:".to_string());
-                source_lines.push(format!("Error: {e}"));
-            }
-        }
-
-        let items: Vec<ListItem> = source_lines
+        let items: Vec<ListItem> = self
+            .view_state
+            .source_lines
             .iter()
             .map(|line| {
                 let style = if line.starts_with("->") {
@@ -816,6 +1013,38 @@ impl App {
         );
 
         f.render_widget(source_panel, area);
+    }
+
+    fn render_signal_panel(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
+        let items: Vec<ListItem> = self
+            .view_state
+            .signal_lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let style = if i == 0 && line.ends_with(" ps") {
+                    // Time header - make it bold and colored
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else if line.starts_with("Error:") || line.starts_with("Error ") {
+                    Style::default().fg(Color::Red)
+                } else if line == "no waves found" || line == "No signals selected" {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(line.clone()).style(style)
+            })
+            .collect();
+
+        let signal_panel = List::new(items).block(
+            Block::default()
+                .borders(ratatui::widgets::Borders::ALL)
+                .title("Signals"),
+        );
+
+        f.render_widget(signal_panel, area);
     }
 
     fn render_command_bar(&self, f: &mut Frame, area: ratatui::layout::Rect) {
@@ -890,7 +1119,7 @@ impl App {
             .highlight_style(
                 Style::default()
                     .bg(Color::Blue)
-                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::BOLD),
             );
 
         f.render_widget(results_list, chunks[1]);
@@ -907,16 +1136,135 @@ impl App {
             .alignment(Alignment::Center);
         f.render_widget(help_text, help_area);
     }
+
+    fn render_help_modal(&self, f: &mut Frame, area: ratatui::layout::Rect) {
+        use ratatui::layout::Alignment;
+        use ratatui::widgets::{Clear, Paragraph};
+
+        // Calculate popup size and position (centered, 70% width, 60% height)
+        let popup_area = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(20), // Top margin
+                Constraint::Percentage(60), // Popup height
+                Constraint::Percentage(20), // Bottom margin
+            ])
+            .split(area)[1];
+
+        let popup_area = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(15), // Left margin
+                Constraint::Percentage(70), // Popup width
+                Constraint::Percentage(15), // Right margin
+            ])
+            .split(popup_area)[1];
+
+        // Clear the background
+        f.render_widget(Clear, popup_area);
+
+        // Get content and calculate visible area
+        let content = self.help_modal_state.get_content();
+        let available_height = popup_area.height.saturating_sub(2) as usize; // Account for borders
+        let total_lines = content.len();
+        let scroll_offset = self.help_modal_state.get_scroll_offset();
+
+        // Calculate which lines to show based on scroll offset
+        let visible_content = if total_lines > available_height {
+            let max_scroll = total_lines.saturating_sub(available_height);
+            let actual_scroll = scroll_offset.min(max_scroll);
+            let start_idx = total_lines.saturating_sub(available_height + actual_scroll);
+            let end_idx = start_idx + available_height;
+
+            &content[start_idx..end_idx.min(total_lines)]
+        } else {
+            content
+        };
+
+        // Render help content
+        let items: Vec<ListItem> = visible_content
+            .iter()
+            .map(|line| {
+                let style = if line.starts_with("Current command") || line.starts_with("Help for") {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else if line.starts_with("  ") && line.contains("--") {
+                    // Command line
+                    Style::default().fg(Color::Yellow)
+                } else if line.starts_with("Keyboard shortcuts:")
+                    || line.starts_with("Description:")
+                    || line.starts_with("Usage:")
+                    || line.starts_with("Aliases:")
+                    || line.starts_with("Examples:")
+                {
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(line.clone()).style(style)
+            })
+            .collect();
+
+        let help_list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Help (Press Esc, Enter, or 'q' to close)"),
+        );
+
+        f.render_widget(help_list, popup_area);
+
+        // Add scrollbar if there's more content than can fit
+        if total_lines > available_height {
+            let scrollbar_area = Rect {
+                x: popup_area.x + popup_area.width - 1,
+                y: popup_area.y + 1,
+                width: 1,
+                height: popup_area.height - 2,
+            };
+
+            let max_scroll = total_lines.saturating_sub(available_height);
+            let scrollbar = Scrollbar::default()
+                .orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"));
+
+            let mut scrollbar_state = ratatui::widgets::ScrollbarState::new(total_lines).position(
+                total_lines.saturating_sub(available_height + scroll_offset.min(max_scroll)),
+            );
+
+            f.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+        }
+
+        // Add navigation help text at the bottom
+        let help_area = Rect {
+            x: popup_area.x,
+            y: popup_area.y + popup_area.height,
+            width: popup_area.width,
+            height: 1,
+        };
+        let nav_text = Paragraph::new(
+            "↑↓: Scroll | PgUp/PgDn: Page | Home/End: Top/Bottom | Esc/Enter/q: Close",
+        )
+        .style(Style::default().fg(Color::Gray))
+        .alignment(Alignment::Center);
+        f.render_widget(nav_text, help_area);
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse command line arguments
+    let cli_args: cli::JpdbArgs = argh::from_env();
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::default();
+    let mut app = App::new(cli_args);
     let res = app.run(&mut terminal);
 
     disable_raw_mode()?;
@@ -928,7 +1276,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     terminal.show_cursor()?;
 
     if let Err(err) = res {
-        println!("{err:?}");
+        log::error!("{err:?}");
     }
 
     Ok(())
