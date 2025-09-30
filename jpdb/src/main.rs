@@ -82,14 +82,14 @@ impl log::Log for AppLogger {
     fn flush(&self) {}
 }
 
-pub struct AddsigState {
+pub struct AddSigState {
     active: bool,
     input: String,
     matches: Vec<(Var, String)>,
     selected_index: usize,
 }
 
-impl AddsigState {
+impl AddSigState {
     pub fn new() -> Self {
         Self {
             active: false,
@@ -162,9 +162,56 @@ impl AddsigState {
     }
 }
 
+pub struct HelpModalState {
+    active: bool,
+    content: Vec<String>,
+    scroll_offset: usize,
+}
+
+impl HelpModalState {
+    pub fn new() -> Self {
+        Self {
+            active: false,
+            content: Vec::new(),
+            scroll_offset: 0,
+        }
+    }
+
+    pub fn activate(&mut self, content: Vec<String>) {
+        self.active = true;
+        self.content = content;
+        self.scroll_offset = 0;
+    }
+
+    pub fn deactivate(&mut self) {
+        self.active = false;
+        self.content.clear();
+        self.scroll_offset = 0;
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub fn scroll_up(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_add(lines);
+    }
+
+    pub fn scroll_down(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+    }
+
+    pub fn get_content(&self) -> &[String] {
+        &self.content
+    }
+
+    pub fn get_scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+}
+
 pub struct App {
     pub should_quit: bool,
-
     input_buffer: String,
     pub command_history: Vec<String>,
     controller: Controller,
@@ -183,7 +230,9 @@ pub struct App {
     user_command_history: Vec<String>,
     history_index: Option<usize>,
     // Addsig floating window state
-    addsig_state: AddsigState,
+    addsig_state: AddSigState,
+    // Help modal state
+    help_modal_state: HelpModalState,
 }
 
 impl Default for App {
@@ -250,12 +299,13 @@ impl Default for App {
             scroll_offset: 0,
             show_debug_panel: false,
             debug_scroll_offset: 0, // Initialize debug scroll offset
-            show_split_view: false,
+            show_split_view: true,
             log_buffer,
             last_command: None,
             user_command_history: Vec::new(),
             history_index: None,
-            addsig_state: AddsigState::new(),
+            addsig_state: AddSigState::new(),
+            help_modal_state: HelpModalState::new(),
         };
 
         app
@@ -268,8 +318,38 @@ impl App {
             terminal.draw(|f| self.ui(f))?;
 
             if let Event::Key(key) = event::read()? {
-                // Check if we're in addsig mode first
-                if self.addsig_state.is_active() {
+                // Check if we're in help modal mode first
+                if self.help_modal_state.is_active() {
+                    match key.code {
+                        KeyCode::Up => {
+                            self.help_modal_state.scroll_up(1);
+                        }
+                        KeyCode::Down => {
+                            self.help_modal_state.scroll_down(1);
+                        }
+                        KeyCode::PageUp => {
+                            self.help_modal_state.scroll_up(5);
+                        }
+                        KeyCode::PageDown => {
+                            self.help_modal_state.scroll_down(5);
+                        }
+                        KeyCode::Home => {
+                            // Scroll to top
+                            let content_len = self.help_modal_state.get_content().len();
+                            self.help_modal_state.scroll_up(content_len);
+                        }
+                        KeyCode::End => {
+                            // Scroll to bottom
+                            self.help_modal_state.scroll_down(usize::MAX);
+                        }
+                        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                            // Close help modal
+                            self.help_modal_state.deactivate();
+                        }
+                        _ => {} // Ignore other keys in help modal mode
+                    }
+                } else if self.addsig_state.is_active() {
+                    // Check if we're in addsig mode
                     match key.code {
                         KeyCode::Char(c) => {
                             // Add character to search input
@@ -521,6 +601,11 @@ impl App {
         // Render addsig popup on top if active
         if self.addsig_state.is_active() {
             self.render_addsig_popup(f, f.area());
+        }
+
+        // Render help modal on top if active
+        if self.help_modal_state.is_active() {
+            self.render_help_modal(f, f.area());
         }
     }
 
@@ -920,6 +1005,122 @@ impl App {
             .style(Style::default().fg(Color::Gray))
             .alignment(Alignment::Center);
         f.render_widget(help_text, help_area);
+    }
+
+    fn render_help_modal(&self, f: &mut Frame, area: ratatui::layout::Rect) {
+        use ratatui::layout::Alignment;
+        use ratatui::widgets::{Clear, Paragraph};
+
+        // Calculate popup size and position (centered, 70% width, 60% height)
+        let popup_area = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(20), // Top margin
+                Constraint::Percentage(60), // Popup height
+                Constraint::Percentage(20), // Bottom margin
+            ])
+            .split(area)[1];
+
+        let popup_area = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(15), // Left margin
+                Constraint::Percentage(70), // Popup width
+                Constraint::Percentage(15), // Right margin
+            ])
+            .split(popup_area)[1];
+
+        // Clear the background
+        f.render_widget(Clear, popup_area);
+
+        // Get content and calculate visible area
+        let content = self.help_modal_state.get_content();
+        let available_height = popup_area.height.saturating_sub(2) as usize; // Account for borders
+        let total_lines = content.len();
+        let scroll_offset = self.help_modal_state.get_scroll_offset();
+
+        // Calculate which lines to show based on scroll offset
+        let visible_content = if total_lines > available_height {
+            let max_scroll = total_lines.saturating_sub(available_height);
+            let actual_scroll = scroll_offset.min(max_scroll);
+            let start_idx = total_lines.saturating_sub(available_height + actual_scroll);
+            let end_idx = start_idx + available_height;
+
+            &content[start_idx..end_idx.min(total_lines)]
+        } else {
+            content
+        };
+
+        // Render help content
+        let items: Vec<ListItem> = visible_content
+            .iter()
+            .map(|line| {
+                let style = if line.starts_with("Current command") || line.starts_with("Help for") {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else if line.starts_with("  ") && line.contains("--") {
+                    // Command line
+                    Style::default().fg(Color::Yellow)
+                } else if line.starts_with("Keyboard shortcuts:")
+                    || line.starts_with("Description:")
+                    || line.starts_with("Usage:")
+                    || line.starts_with("Aliases:")
+                    || line.starts_with("Examples:") {
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(line.clone()).style(style)
+            })
+            .collect();
+
+        let help_list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Help (Press Esc, Enter, or 'q' to close)"),
+        );
+
+        f.render_widget(help_list, popup_area);
+
+        // Add scrollbar if there's more content than can fit
+        if total_lines > available_height {
+            let scrollbar_area = Rect {
+                x: popup_area.x + popup_area.width - 1,
+                y: popup_area.y + 1,
+                width: 1,
+                height: popup_area.height - 2,
+            };
+
+            let max_scroll = total_lines.saturating_sub(available_height);
+            let scrollbar = Scrollbar::default()
+                .orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"));
+
+            let mut scrollbar_state = ratatui::widgets::ScrollbarState::new(total_lines)
+                .position(
+                    total_lines.saturating_sub(
+                        available_height + scroll_offset.min(max_scroll),
+                    ),
+                );
+
+            f.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+        }
+
+        // Add navigation help text at the bottom
+        let help_area = Rect {
+            x: popup_area.x,
+            y: popup_area.y + popup_area.height,
+            width: popup_area.width,
+            height: 1,
+        };
+        let nav_text = Paragraph::new("↑↓: Scroll | PgUp/PgDn: Page | Home/End: Top/Bottom | Esc/Enter/q: Close")
+            .style(Style::default().fg(Color::Gray))
+            .alignment(Alignment::Center);
+        f.render_widget(nav_text, help_area);
     }
 }
 

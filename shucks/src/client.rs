@@ -301,12 +301,14 @@ impl Client {
     }
 
     pub fn continue_execution(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.send_command_parsed(Packet::Command(GdbCommand::Resume(Resume::Continue)))?;
+        let resp =
+            self.send_command_parsed(Packet::Command(GdbCommand::Resume(Resume::Continue)))?;
         self.cached_state.time_idx = None;
         self.cached_state.pc = None;
 
         self.cached_state.pc = Some(self.get_current_pc()?);
         self.cached_state.time_idx = Some(self.get_time_idx()?);
+        log::info!("Continue execution response: {resp:?}");
 
         Ok(())
     }
@@ -420,7 +422,6 @@ impl Client {
 
         let rv = self
             .send_monitor_command("time_idx")
-            
             .map(|output| output.trim().parse::<u64>().map_err(|e| e.into()))?;
 
         rv
@@ -1114,7 +1115,11 @@ mod tests {
                     assert!(pc.nz(), "PC should be non-zero");
                 }
                 Err(e) => {
-                    panic!("Failed to get PC on attempt {} after get_time_idx: {:?}", i + 1, e);
+                    panic!(
+                        "Failed to get PC on attempt {} after get_time_idx: {:?}",
+                        i + 1,
+                        e
+                    );
                 }
             }
         }

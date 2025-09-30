@@ -78,53 +78,47 @@ impl UserCommand {
             }
             UserCommand::Help => {
                 let registry = CommandRegistry::new();
+                let mut content = Vec::new();
+
                 if args.trim().is_empty() {
                     // Show all commands in LLDB style
-                    app.command_history.push(
+                    content.push(
                         "Current command abbreviations (type 'help command alias' for more info):"
                             .to_string(),
                     );
+                    content.push("".to_string());
 
                     for cmd in UserCommand::all() {
                         let aliases_str = cmd.aliases().join(", ");
-                        app.command_history.push(format!(
-                            "  {:<9} -- {}",
-                            aliases_str,
-                            cmd.description()
-                        ));
+                        content.push(format!("  {:<9} -- {}", aliases_str, cmd.description()));
                     }
 
-                    app.command_history.push("".to_string());
-                    app.command_history.push("Keyboard shortcuts:".to_string());
-                    app.command_history
-                        .push("  d         -- Toggle debug panel".to_string());
-                    app.command_history
-                        .push("  Ctrl+D    -- Quit the debugger".to_string());
-                    app.command_history
-                        .push("  Ctrl+L    -- Clear screen".to_string());
-                    app.command_history.push("".to_string());
+                    content.push("".to_string());
+                    content.push("Keyboard shortcuts:".to_string());
+                    content.push("  Ctrl+D    -- Quit the debugger".to_string());
+                    content.push("  Ctrl+L    -- Clear screen".to_string());
+                    content.push("".to_string());
                 } else {
                     // Show specific command help
                     let command_name = args.trim();
                     if let Some(command) = registry.get_command(command_name) {
-                        app.command_history
-                            .push(format!("Help for '{}':", command.name()));
-                        app.command_history.push("".to_string());
-                        app.command_history
-                            .push(format!("Description: {}", command.description()));
-                        app.command_history
-                            .push(format!("Usage: {}", command.usage()));
-                        app.command_history
-                            .push(format!("Aliases: {}", command.aliases().join(", ")));
-                        app.command_history.push("".to_string());
-                        app.command_history.push("Examples:".to_string());
+                        content.push(format!("Help for '{}':", command.name()));
+                        content.push("".to_string());
+                        content.push(format!("Description: {}", command.description()));
+                        content.push(format!("Usage: {}", command.usage()));
+                        content.push(format!("Aliases: {}", command.aliases().join(", ")));
+                        content.push("".to_string());
+                        content.push("Examples:".to_string());
                         for example in command.examples() {
-                            app.command_history.push(format!("  {example}"));
+                            content.push(format!("  {example}"));
                         }
                     } else {
                         return Err(format!("Unknown command: {command_name}"));
                     }
                 }
+
+                // Activate the help modal with the content
+                app.help_modal_state.activate(content);
                 Ok(())
             }
             UserCommand::Clear => {
@@ -178,8 +172,9 @@ impl UserCommand {
                 if let Err(e) = app.continue_execution() {
                     return Err(format!("Error continuing execution: {}", e));
                 }
-                // Invalidate cache since execution state changed
-                app.invalidate_time_idx_cache();
+
+                app.command_history.push("Hit breakpoint...".to_string());
+                app.refresh_all_views();
                 Ok(())
             }
             UserCommand::Toggle => {
