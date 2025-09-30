@@ -3,6 +3,9 @@ JPDB: GDB for waveforms
 
 JPDB is a GDB inspired debugger for debugging pre-silicon CPUs.
 
+https://github.com/user-attachments/assets/fdd5970e-25ff-4398-96c8-e72ccc92d656
+
+
 ### Usage
 
 to get started 
@@ -71,29 +74,22 @@ although this will happen when you launch jpdb normally
 not yet, but if you give me a wave dump of a superscalar CPU, i will add support
 and thank you kindly
 
-
 * what instruction sets are supported?
 
-only RV32G, but if you have a dump of another instruction set, i will add
+only RV32G, but if you have a dump of another cpu that uses a different ISA, i will add
 support and thank you kindly
 
 * do i NEED to supply the elf file to use JPDB? 
 
-probably not, file an issue and i'll make that optional
+at this point, yeah, we get a lot of juicy information from the elf
 
 * n always steps into function calls whats up with that?
 
-yeah i need to fix that sorry
+yeah i need to fix that sorry, ill get to it eventually or if you like the project file an issue and the guilt will accelerate me
 
-* does jpdb hook into waveform viewers? 
+* how does jpdb integrate with surfer? 
 
-no, but it could integrate with vaporview or surfer fairly easily
-
-## acknowledgements
-
-`wellen` library made this easy, thank you kevin laeufer
-
-also tom verbeure did something similar a while back, shoutout
+it uses the wave control protocol (WCP) which is nice. but also i think surfer might be a little buggy, some of the commands (e.g. adjusting viewport) cause failures while others dont. so right now the integration is fairly cursory, but the core logic is there
 
 
 ### Internals 
@@ -110,3 +106,9 @@ when i was starting this out, the point was to start out with just dang and make
 2. having control over the TUI would be useful for more aggresively integrating with wave specific stuff
 
 you can use these libaries on their own. they should _just_work_ hopefully
+
+## acknowledgements
+
+`wellen` library made this easy, thank you kevin laeufer
+
+also tom verbeure did something similar a while back, shoutout
