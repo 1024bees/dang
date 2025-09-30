@@ -412,6 +412,11 @@ impl App {
                             // Select the signal and exit addsig mode
                             if let Some((var, _)) = self.addsig_state.get_selected().cloned() {
                                 self.model.select_signal(var);
+                                if let Some(ref mut wcp) = self.wcp_client {
+                                    if let Some(path) = self.model.most_recent_var_path() {
+                                        let _ = wcp.add_signal(path.as_str());
+                                    }
+                                }
                                 self.refresh_signal_view();
                             }
                             self.addsig_state.deactivate();
@@ -647,14 +652,26 @@ impl App {
         use std::process::{Command, Stdio};
 
         //TODO: get a random port, i am lazy
-        let wcp_port = 3333;
+        let wcp_port = 54321;
+        let mut tmp_script = std::env::temp_dir();
+        tmp_script.push("surfer_commands.sucl");
+
+        std::fs::write(tmp_script.as_path(), "wcp_server_start")?;
 
         let child = Command::new("surfer")
             .arg(wave_path.to_str().ok_or("Invalid wave path")?)
+            .arg("--script")
+            .arg(
+                tmp_script
+                    .as_os_str()
+                    .to_str()
+                    .ok_or("Invalid script path")?,
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
+        log::info!("Launched Surfer with PID {}", child.id());
 
         self.surfer_process = Some(child);
 
@@ -671,6 +688,7 @@ impl App {
     pub fn connect_to_surfer(&mut self, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         let client = WcpClient::connect(addr)?;
         self.wcp_client = Some(client);
+        log::info!("Connected to Surfer via WCP at {}", addr);
 
         // Sync current waveform state
         self.sync_waveform_position()?;
@@ -682,7 +700,14 @@ impl App {
     fn sync_waveform_position(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ref mut wcp) = self.wcp_client {
             if let Ok(time_idx) = self.model.get_time_idx() {
-                wcp.set_cursor(time_idx)?;
+                self.model
+                    .client
+                    .wave_tracker
+                    .as_ref()
+                    .unwrap()
+                    .get_current_time(time_idx as shucks::TimeTableIdx);
+
+                wcp.goto_time(time_idx)?;
             }
         }
         Ok(())

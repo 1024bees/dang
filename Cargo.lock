@@ -2316,6 +2316,7 @@ dependencies = [
  "env_logger",
  "libsurfer",
  "log",
+ "num",
  "ratatui",
  "serde_json",
  "shucks",

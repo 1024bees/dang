@@ -202,15 +202,17 @@ impl UserCommand {
                 Ok(())
             }
             UserCommand::Surfer => {
-                //app.launch_surfer()
-                //    .map_err(|e| format!("Failed to launch Surfer: {}", e))?;
+                let wave_path = app.cli_args.wave_path.clone();
+                app.launch_surfer(&wave_path)
+                    .map_err(|e| format!("Failed to launch Surfer: {}", e))?;
                 app.command_history
                     .push("Surfer launched successfully".to_string());
                 Ok(())
             }
             UserCommand::SurferConnect => {
+                //FIXME: bad constant evil evil evil
                 let addr = if args.trim().is_empty() {
-                    "127.0.0.1:3333".to_string()
+                    "127.0.0.1:54321".to_string()
                 } else {
                     args.trim().to_string()
                 };

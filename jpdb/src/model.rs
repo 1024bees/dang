@@ -1,7 +1,7 @@
 use shucks::{Client, TimeTableIdx, Var};
 
 pub struct DebuggerModel {
-    client: Client,
+    pub client: Client,
     cached_time_idx: Option<u64>,
     terminated: bool,
 }
@@ -50,7 +50,8 @@ impl DebuggerModel {
             return Err("Process has terminated".to_string());
         }
 
-        let still_alive = self.client
+        let still_alive = self
+            .client
             .continue_execution()
             .map_err(|e| e.to_string())?;
         if !still_alive {
@@ -230,6 +231,14 @@ impl DebuggerModel {
     pub fn select_signal(&mut self, var: Var) {
         if let Some(ref mut tracker) = self.client.wave_tracker {
             tracker.select_signal(var);
+        }
+    }
+
+    pub fn most_recent_var_path(&self) -> Option<String> {
+        if let Some(ref tracker) = self.client.wave_tracker {
+            tracker.get_signal_names().last().cloned()
+        } else {
+            None
         }
     }
 

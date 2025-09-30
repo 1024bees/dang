@@ -1,11 +1,12 @@
-use std::io::{BufRead, BufReader, Write};
+use libsurfer::wcp::proto::{WcpCSMessage, WcpCommand};
+use num::BigInt;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 
 /// WCP (Waveform Control Protocol) client for controlling Surfer waveform viewer
 pub struct WcpClient {
     stream: TcpStream,
-    next_id: u64,
 }
 
 impl WcpClient {
@@ -14,80 +15,40 @@ impl WcpClient {
         let stream = TcpStream::connect(addr)?;
         stream.set_nodelay(true)?;
 
-        Ok(Self {
-            stream,
-            next_id: 1,
-        })
+        Ok(Self { stream })
     }
 
-    /// Send a JSON-RPC style command to the WCP server
-    fn send_command(&mut self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let id = self.next_id;
-        self.next_id += 1;
+    /// Send a WCP command to the server
+    fn send_command(&mut self, command: WcpCommand) -> Result<(), Box<dyn std::error::Error>> {
+        let message = WcpCSMessage::command(command);
+        let message_str = serde_json::to_string(&message)?;
 
-        let request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params
-        });
+        // Write message followed by null terminator (not newline!)
+        self.stream.write_all(message_str.as_bytes())?;
 
-        let request_str = serde_json::to_string(&request)?;
-        writeln!(self.stream, "{}", request_str)?;
         self.stream.flush()?;
+        let mut buffer = Vec::new();
+        self.stream.read(&mut buffer)?;
+        log::info!("got response: {:?}", String::from_utf8_lossy(&buffer));
 
-        // Read response
-        let mut reader = BufReader::new(&self.stream);
-        let mut response_line = String::new();
-        reader.read_line(&mut response_line)?;
-
-        let response: serde_json::Value = serde_json::from_str(&response_line)?;
-
-        // Check for error in response
-        if let Some(error) = response.get("error") {
-            return Err(format!("WCP error: {}", error).into());
-        }
-
-        Ok(response.get("result").cloned().unwrap_or(serde_json::Value::Null))
-    }
-
-    /// Load a waveform file
-    pub fn load_waveform(&mut self, path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-        let params = serde_json::json!({
-            "path": path.to_string_lossy()
-        });
-
-        self.send_command("loadWaveform", params)?;
         Ok(())
     }
 
-    /// Navigate to a specific timestamp in the waveform
+    /// Navigate to a specific timestamp in the waveform (time in picoseconds)
     pub fn goto_time(&mut self, time_ps: u64) -> Result<(), Box<dyn std::error::Error>> {
-        let params = serde_json::json!({
-            "time": time_ps
-        });
-
-        self.send_command("gotoTime", params)?;
-        Ok(())
+        let command = WcpCommand::set_viewport_to {
+            timestamp: BigInt::from(time_ps),
+        };
+        let rv = self.send_command(command);
+        log::info!("tried to set viewport to {time_ps} and got response: {rv:?}");
+        rv
     }
 
     /// Add a signal to the waveform viewer
     pub fn add_signal(&mut self, signal_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let params = serde_json::json!({
-            "signal": signal_path
-        });
-
-        self.send_command("addSignal", params)?;
-        Ok(())
-    }
-
-    /// Set the cursor position to a specific time
-    pub fn set_cursor(&mut self, time_ps: u64) -> Result<(), Box<dyn std::error::Error>> {
-        let params = serde_json::json!({
-            "time": time_ps
-        });
-
-        self.send_command("setCursor", params)?;
-        Ok(())
+        let command = WcpCommand::add_variables {
+            variables: vec![signal_path.to_string()],
+        };
+        self.send_command(command)
     }
 }
