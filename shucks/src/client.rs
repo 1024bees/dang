@@ -1193,26 +1193,12 @@ mod tests {
             let result = client.continue_execution();
 
             match result {
-                Ok(()) => {
-                    // Check if time index is still advancing
-                    if let Ok(current_time) = client.get_time_idx() {
-                        log::info!("Time index: {}", current_time);
+                Ok(false) => {
+                    log::info!("Program has reached the end");
+                }
 
-                        if current_time == last_time_idx {
-                            same_time_count += 1;
-                            log::info!("Time index hasn't changed (count: {})", same_time_count);
-
-                            // If time hasn't advanced for several iterations, we've reached the end
-                            if same_time_count >= 3 {
-                                log::info!("Program has reached the end at time {}", current_time);
-                                break;
-                            }
-                        } else {
-                            same_time_count = 0;
-                        }
-
-                        last_time_idx = current_time;
-                    }
+                Ok(true) => {
+                    log::info!("Program is still running");
                 }
                 Err(e) => {
                     log::info!("Continue failed (expected at program end): {:?}", e);
@@ -1226,11 +1212,11 @@ mod tests {
         let result = client.continue_execution();
 
         match result {
-            Ok(()) => {
-                log::info!("Continue past end succeeded (unexpected?)");
-                // If it succeeds, verify the state is still valid
-                let pc_result = client.get_current_pc();
-                let time_result = client.get_time_idx();
+            Ok(true) => {
+                panic!("WTF we didnt terminate?");
+            }
+            Ok(false) => {
+                log::info!("We terminated");
             }
             Err(e) => {
                 log::info!("Continue past end failed with error: {:?}", e);
