@@ -7,12 +7,10 @@ use std::{
     time::Duration,
 };
 
-mod controller;
 mod model;
 mod user_commands;
 mod view;
 
-use controller::Controller;
 use model::DebuggerModel;
 use user_commands::CommandRegistry;
 use view::ViewState;
@@ -226,7 +224,7 @@ pub struct App {
     pub should_quit: bool,
     input_buffer: String,
     pub command_history: Vec<String>,
-    controller: Controller,
+    model: DebuggerModel,
     view_state: ViewState,
     _dang_thread_handle: thread::JoinHandle<()>,
     scroll_offset: usize,
@@ -297,17 +295,35 @@ impl Default for App {
             .expect("Failed to load waveform");
         thread::sleep(Duration::from_millis(300));
 
-        let mut controller = Controller::new(DebuggerModel::new(shucks_client));
+        let mut model = DebuggerModel::new(shucks_client);
         let mut view_state = ViewState::default();
-        controller.refresh_all_views(&mut view_state);
 
-        
+        // Initialize views
+        if let Ok(execution) = model.fetch_execution_snapshot() {
+            view_state.execution_lines = execution.summary_lines;
+            view_state.instruction_lines = execution.instruction_lines;
+        } else {
+            view_state.execution_lines = vec!["Failed to load execution info".to_string()];
+            view_state.instruction_lines = vec!["Failed to load execution info".to_string()];
+        }
+
+        if let Ok(source) = model.fetch_source_snapshot() {
+            view_state.source_lines = source.lines;
+        } else {
+            view_state.source_lines = vec!["Failed to load source info".to_string()];
+        }
+
+        if let Ok(signals) = model.fetch_signal_snapshot() {
+            view_state.signal_lines = signals.lines;
+        } else {
+            view_state.signal_lines = vec!["Failed to load signal info".to_string()];
+        }
 
         App {
             should_quit: false,
             input_buffer: String::new(),
             command_history: Vec::new(),
-            controller,
+            model,
             view_state,
             _dang_thread_handle: dang_handle,
             scroll_offset: 0,
@@ -369,9 +385,9 @@ impl App {
                             new_input.push(c);
                             self.addsig_state.update_search(new_input);
 
-                            // Update fuzzy matches via controller
+                            // Update fuzzy matches via model
                             let matches = self
-                                .controller
+                                .model
                                 .fuzzy_match_signals(self.addsig_state.get_input());
                             self.addsig_state.set_matches(matches);
                         }
@@ -381,9 +397,9 @@ impl App {
                             new_input.pop();
                             self.addsig_state.update_search(new_input);
 
-                            // Update fuzzy matches via controller
+                            // Update fuzzy matches via model
                             let matches = self
-                                .controller
+                                .model
                                 .fuzzy_match_signals(self.addsig_state.get_input());
                             self.addsig_state.set_matches(matches);
                         }
@@ -396,8 +412,8 @@ impl App {
                         KeyCode::Enter => {
                             // Select the signal and exit addsig mode
                             if let Some((var, _)) = self.addsig_state.get_selected().cloned() {
-                                self.controller.select_signal(var);
-                                self.controller.refresh_signal_view(&mut self.view_state);
+                                self.model.select_signal(var);
+                                self.refresh_signal_view();
                             }
                             self.addsig_state.deactivate();
                         }
@@ -514,7 +530,7 @@ impl App {
     }
 
     pub fn step_next(&mut self) {
-        if let Err(e) = self.controller.step() {
+        if let Err(e) = self.model.step() {
             self.command_history.push(format!("Error stepping: {e}"));
             return;
         }
@@ -569,23 +585,50 @@ impl App {
     }
 
     fn refresh_all_views(&mut self) {
-        self.controller.refresh_all_views(&mut self.view_state);
+        if let Ok(execution) = self.model.fetch_execution_snapshot() {
+            self.view_state.execution_lines = execution.summary_lines;
+            self.view_state.instruction_lines = execution.instruction_lines;
+        } else {
+            self.view_state.execution_lines = vec!["Failed to load execution info".to_string()];
+            self.view_state.instruction_lines = vec!["Failed to load execution info".to_string()];
+        }
+
+        if let Ok(source) = self.model.fetch_source_snapshot() {
+            self.view_state.source_lines = source.lines;
+        } else {
+            self.view_state.source_lines = vec!["Failed to load source info".to_string()];
+        }
+
+        if let Ok(signals) = self.model.fetch_signal_snapshot() {
+            self.view_state.signal_lines = signals.lines;
+        } else {
+            self.view_state.signal_lines = vec!["Failed to load signal info".to_string()];
+        }
+    }
+
+    fn refresh_signal_view(&mut self) {
+        match self.model.fetch_signal_snapshot() {
+            Ok(snapshot) => self.view_state.signal_lines = snapshot.lines,
+            Err(err) => {
+                self.view_state.signal_lines = vec![format!("Error getting signal info: {err}")];
+            }
+        }
     }
 
     pub fn set_breakpoint(&mut self, address: u32) -> Result<(), String> {
-        self.controller.set_breakpoint(address)
+        self.model.set_breakpoint(address)
     }
 
     pub fn set_breakpoint_at_line(&mut self, file: &str, line: u64) -> Result<Vec<u32>, String> {
-        self.controller.set_breakpoint_at_line(file, line)
+        self.model.set_breakpoint_at_line(file, line)
     }
 
     pub fn continue_execution(&mut self) -> Result<(), String> {
-        self.controller.continue_execution()
+        self.model.continue_execution()
     }
 
     pub fn invalidate_time_idx_cache(&mut self) {
-        self.controller.invalidate_time_index();
+        self.model.invalidate_time_index();
     }
 
     fn ui(&mut self, f: &mut Frame) {
