@@ -69,12 +69,10 @@ impl UserCommand {
                 Ok(())
             }
             UserCommand::Next => {
-                app.add_execution_info();
                 app.step_next();
                 Ok(())
             }
             UserCommand::Step => {
-                app.add_execution_info();
                 app.step_next();
                 Ok(())
             }
@@ -135,19 +133,17 @@ impl UserCommand {
                 Ok(())
             }
             UserCommand::Breakpoint => match parse_breakpoint_arg(args)? {
-                BreakpointTarget::Address(address) => {
-                    match app.shucks_client.set_breakpoint(address) {
-                        Ok(()) => {
-                            app.command_history
-                                .push(format!("Breakpoint set at address 0x{:x}", address));
-                            Ok(())
-                        }
-                        Err(e) => Err(format!("Failed to set breakpoint: {}", e)),
+                BreakpointTarget::Address(address) => match app.set_breakpoint(address) {
+                    Ok(()) => {
+                        app.command_history
+                            .push(format!("Breakpoint set at address 0x{:x}", address));
+                        Ok(())
                     }
-                }
+                    Err(e) => Err(format!("Failed to set breakpoint: {}", e)),
+                },
                 BreakpointTarget::FileLine { file, line } => {
                     let file_str = file.to_string_lossy();
-                    match app.shucks_client.set_breakpoint_at_line(&file_str, line) {
+                    match app.set_breakpoint_at_line(&file_str, line) {
                         Ok(addresses) => {
                             if addresses.len() == 1 {
                                 app.command_history.push(format!(
@@ -179,12 +175,7 @@ impl UserCommand {
             UserCommand::Continue => {
                 app.command_history.push("Continuing...".to_string());
                 // Send continue command via shucks client
-                if let Err(e) = app
-                    .shucks_client
-                    .send_command_parsed(shucks::Packet::Command(
-                        shucks::commands::GdbCommand::Resume(shucks::commands::Resume::Continue),
-                    ))
-                {
+                if let Err(e) = app.continue_execution() {
                     return Err(format!("Error continuing execution: {}", e));
                 }
                 // Invalidate cache since execution state changed

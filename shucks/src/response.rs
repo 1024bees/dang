@@ -146,12 +146,6 @@ impl RawGdbResponse {
     }
 
     pub fn find_packet_data(data: &[u8]) -> Result<Self, ParseError> {
-        log::debug!(
-            "find_packet_data: examining {} bytes: {:?}",
-            data.len(),
-            String::from_utf8_lossy(data)
-        );
-
         if data.is_empty() {
             return Err(ParseError::InvalidFormat("no data"));
         }
@@ -165,7 +159,7 @@ impl RawGdbResponse {
         }
 
         if data.len() < 4 || data[0] != b'$' {
-            log::debug!("find_packet_data: packet too short or missing $ prefix");
+            log::warn!("find_packet_data: packet too short or missing $ prefix");
             return Err(ParseError::InvalidFormat("missing $ prefix"));
         }
 
@@ -185,7 +179,6 @@ impl RawGdbResponse {
         // Extract exactly 2 characters for checksum, ignore anything after
         let checksum_str = str::from_utf8(&data[hash_pos + 1..hash_pos + 3])
             .map_err(|_| ParseError::InvalidFormat("invalid checksum -- its not a string"))?;
-        log::debug!("Checksum string: {checksum_str}");
 
         // Verify checksum
         let expected_checksum =
@@ -194,9 +187,8 @@ impl RawGdbResponse {
         let actual_checksum = content.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
 
         if actual_checksum != expected_checksum {
-            log::debug!("Content: {content:?}");
-            log::debug!(
-                "Actual checksum: {actual_checksum}, expected checksum: {expected_checksum}"
+            log::error!(
+                "checksum mismatch! actual checksum: {actual_checksum}, expected checksum: {expected_checksum}"
             );
             return Err(ParseError::InvalidChecksum);
         }
@@ -217,19 +209,8 @@ impl GdbResponse {
     fn parse_content(raw_resp: RawGdbResponse, packet: &Packet) -> Result<Self, ParseError> {
         let content = raw_resp.as_slice();
 
-        log::debug!(
-            "Parsing content ({} bytes): {:?}",
-            content.len(),
-            String::from_utf8_lossy(content)
-        );
-        log::debug!(
-            "AAAAAAAAAAPacket starts with {:?}, {}",
-            content.first(),
-            content.starts_with(b"m")
-        );
-
         if content.is_empty() {
-            log::debug!("Empty content -> GdbResponse::Empty");
+            log::trace!("Empty content -> GdbResponse::Empty");
             return Ok(GdbResponse::Empty);
         }
 
@@ -258,19 +239,14 @@ impl GdbResponse {
 
             // qXfer responses (m<data> or l<data>)
             content if content.starts_with(b"m") => {
-                log::debug!("DEBUG: Found 'm' prefix, content length: {}", content.len());
                 let data_part = &content[1..];
                 let looks_like_thread = Self::looks_like_thread_info(data_part);
-                log::debug!("DEBUG: Data part: {:?}", String::from_utf8_lossy(data_part));
-                log::debug!("DEBUG: Looks like thread info: {looks_like_thread}");
 
                 // This could be either thread info or qXfer data
                 // Try to parse as thread info first, then fall back to qXfer
                 if looks_like_thread {
-                    log::debug!("DEBUG: Parsing as thread info");
                     Self::parse_thread_info(content, false)
                 } else {
-                    log::debug!("DEBUG: Parsing as qXfer data");
                     // Parse as qXfer data
                     Ok(GdbResponse::QXferData {
                         data: content[1..].to_vec(),
@@ -318,35 +294,23 @@ impl GdbResponse {
                 // where 'O' indicates console output
                 let output = if content.starts_with(b"O") && content.len() > 1 {
                     // Strip the 'O' prefix and decode the remaining hex
-                    println!("stripped hex content is {:?}", &content[1..]);
                     let hex_content = &content[1..];
                     if Self::is_hex_data(hex_content) {
-                        println!("hex content is hex data");
                         match Self::decode_hex(hex_content) {
                             Ok(decoded_bytes) => {
-                                println!("decoded bytes are {:?}", &decoded_bytes);
                                 String::from_utf8_lossy(&decoded_bytes).to_string()
                             }
-                            Err(e) => {
-                                println!("error is {e:?} when decoding hex data");
-                                String::from_utf8_lossy(content).to_string()
-                            }
+                            Err(e) => String::from_utf8_lossy(content).to_string(),
                         }
                     } else {
                         String::from_utf8_lossy(content).to_string()
                     }
                 } else if Self::is_hex_data(content) {
-                    println!("hex content is hex data");
-                    println!("unstripped hex content is {:?}", &content[1..]);
-
                     // Try to decode as hex first
                     match Self::decode_hex(content) {
-                        Ok(decoded_bytes) => {
-                            println!("decoded bytes are {:?}", &decoded_bytes);
-                            String::from_utf8_lossy(&decoded_bytes).to_string()
-                        }
+                        Ok(decoded_bytes) => String::from_utf8_lossy(&decoded_bytes).to_string(),
                         Err(e) => {
-                            println!("error is {e:?} when decoding hex data");
+                            log::error!("error is {e:?} when decoding hex data");
                             String::from_utf8_lossy(content).to_string()
                         }
                     }
@@ -362,21 +326,17 @@ impl GdbResponse {
                 let run_length_decoded = Self::decode_run_length(content);
                 let data = Self::decode_hex(&run_length_decoded)?;
 
-                log::debug!(
-                    "Original content was {:?}",
-                    String::from_utf8_lossy(content)
-                );
-                log::debug!("Decoded run-length + hex data: {} bytes", data.len());
+                log::trace!("Decoded run-length + hex data: {} bytes", data.len());
 
                 // Use packet type to determine response classification
                 if packet.is_register_read() {
-                    log::debug!(
+                    log::trace!(
                         "Classified as RegisterData based on packet type (length={})",
                         data.len()
                     );
                     Ok(GdbResponse::RegisterData { data })
                 } else if packet.is_memory_read() {
-                    log::debug!(
+                    log::trace!(
                         "Classified as MemoryData based on packet type (length={})",
                         data.len()
                     );
@@ -384,7 +344,7 @@ impl GdbResponse {
                 } else {
                     // Fallback: use heuristic for unknown packet types
                     if data.len() >= 128 && data.len() % 4 == 0 {
-                        log::debug!(
+                        log::trace!(
                             "Heuristically classified as RegisterData (length={}, divisible by 4)",
                             data.len()
                         );
@@ -401,14 +361,14 @@ impl GdbResponse {
 
             // Default: return as raw data
             _ => {
-                log::debug!("Classified as Raw data (no specific pattern matched)");
+                log::trace!("Classified as Raw data (no specific pattern matched)");
                 Ok(GdbResponse::Raw {
                     data: content.to_vec(),
                 })
             }
         }
         .map(|response| {
-            log::debug!("Final parsed response: {response}");
+            log::trace!("Final parsed response: {response}");
             response
         })
     }

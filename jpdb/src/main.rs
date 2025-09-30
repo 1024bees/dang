@@ -7,8 +7,15 @@ use std::{
     time::Duration,
 };
 
+mod controller;
+mod model;
 mod user_commands;
+mod view;
+
+use controller::Controller;
+use model::DebuggerModel;
 use user_commands::CommandRegistry;
+use view::ViewState;
 
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -20,13 +27,10 @@ use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem},
+    widgets::{Block, Borders, List, ListItem, Scrollbar},
     Frame, Terminal,
 };
-use shucks::{
-    commands::{GdbCommand, Resume},
-    Client, Packet, TimeTableIdx, Var,
-};
+use shucks::{Client, Var};
 
 // Custom logger that captures messages for ratatui display
 #[derive(Debug, Clone)]
@@ -163,12 +167,13 @@ pub struct App {
 
     input_buffer: String,
     pub command_history: Vec<String>,
-    pub instruction_output: Vec<String>,
-    pub shucks_client: Client,
+    controller: Controller,
+    view_state: ViewState,
     _dang_thread_handle: thread::JoinHandle<()>,
     scroll_offset: usize,
     // Debug panel state
     show_debug_panel: bool,
+    debug_scroll_offset: usize, // Add scroll offset for debug panel
     // Split view state
     show_split_view: bool,
     log_buffer: Arc<Mutex<VecDeque<LogMessage>>>,
@@ -179,8 +184,6 @@ pub struct App {
     history_index: Option<usize>,
     // Addsig floating window state
     addsig_state: AddsigState,
-    // Cache for time index to avoid overwhelming GDB server
-    cached_time_idx: Option<u64>,
 }
 
 impl Default for App {
@@ -225,58 +228,41 @@ impl Default for App {
             .expect("Failed to get parent dir")
             .to_path_buf();
         let wave_path = workspace_root.join("test_data/ibex/sim.fst");
-        shucks_client
-            .load_waveform(wave_path)
-            .expect("Failed to load waveform");
 
         shucks_client.initialize_gdb_session().expect("");
         let _ = shucks_client.load_elf_info();
-
+        shucks_client
+            .load_waveform(wave_path)
+            .expect("Failed to load waveform");
         thread::sleep(Duration::from_millis(300));
 
-        let mut app = App {
+        let mut controller = Controller::new(DebuggerModel::new(shucks_client));
+        let mut view_state = ViewState::default();
+        controller.refresh_all_views(&mut view_state);
+
+        let app = App {
             should_quit: false,
             input_buffer: String::new(),
             command_history: Vec::new(),
-            instruction_output: Vec::new(),
-            shucks_client,
+            controller,
+            view_state,
             _dang_thread_handle: dang_handle,
             scroll_offset: 0,
             show_debug_panel: false,
+            debug_scroll_offset: 0, // Initialize debug scroll offset
             show_split_view: false,
             log_buffer,
             last_command: None,
             user_command_history: Vec::new(),
             history_index: None,
             addsig_state: AddsigState::new(),
-            cached_time_idx: None, // Initialize cache as empty
         };
-
-        // Show initial instructions when first connecting
-        app.add_execution_info();
 
         app
     }
 }
 
 impl App {
-    /// Get the current time index with caching to avoid overwhelming the GDB server
-    /// Cache is invalidated after step, next, or continue commands
-    fn get_cached_time_idx(&mut self) -> Result<u64, Box<dyn std::error::Error>> {
-        if let Some(cached_value) = self.cached_time_idx {
-            Ok(cached_value)
-        } else {
-            let time_idx = self.shucks_client.get_time_idx()?;
-            self.cached_time_idx = Some(time_idx);
-            Ok(time_idx)
-        }
-    }
-
-    /// Invalidate the time index cache - call this after step, next, or continue
-    fn invalidate_time_idx_cache(&mut self) {
-        self.cached_time_idx = None;
-    }
-
     fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
         loop {
             terminal.draw(|f| self.ui(f))?;
@@ -291,12 +277,11 @@ impl App {
                             new_input.push(c);
                             self.addsig_state.update_search(new_input);
 
-                            // Update fuzzy matches
-                            if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker {
-                                let matches =
-                                    wave_tracker.fuzzy_match_var(self.addsig_state.get_input());
-                                self.addsig_state.set_matches(matches);
-                            }
+                            // Update fuzzy matches via controller
+                            let matches = self
+                                .controller
+                                .fuzzy_match_signals(self.addsig_state.get_input());
+                            self.addsig_state.set_matches(matches);
                         }
                         KeyCode::Backspace => {
                             // Remove character from search input
@@ -304,12 +289,11 @@ impl App {
                             new_input.pop();
                             self.addsig_state.update_search(new_input);
 
-                            // Update fuzzy matches
-                            if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker {
-                                let matches =
-                                    wave_tracker.fuzzy_match_var(self.addsig_state.get_input());
-                                self.addsig_state.set_matches(matches);
-                            }
+                            // Update fuzzy matches via controller
+                            let matches = self
+                                .controller
+                                .fuzzy_match_signals(self.addsig_state.get_input());
+                            self.addsig_state.set_matches(matches);
                         }
                         KeyCode::Up => {
                             self.addsig_state.select_prev();
@@ -320,10 +304,8 @@ impl App {
                         KeyCode::Enter => {
                             // Select the signal and exit addsig mode
                             if let Some((var, _)) = self.addsig_state.get_selected().cloned() {
-                                if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker
-                                {
-                                    wave_tracker.select_signal(var);
-                                }
+                                self.controller.select_signal(var);
+                                self.controller.refresh_signal_view(&mut self.view_state);
                             }
                             self.addsig_state.deactivate();
                         }
@@ -348,6 +330,26 @@ impl App {
                             // Ctrl+L: Clear screen
                             self.command_history.clear();
                             self.scroll_offset = 0;
+                        }
+
+                        // Debug panel scrolling (only when debug panel is visible)
+                        KeyCode::PageUp if self.show_debug_panel => {
+                            // Scroll up in debug panel
+                            self.debug_scroll_offset = self.debug_scroll_offset.saturating_add(5);
+                        }
+                        KeyCode::PageDown if self.show_debug_panel => {
+                            // Scroll down in debug panel
+                            self.debug_scroll_offset = self.debug_scroll_offset.saturating_sub(5);
+                        }
+                        KeyCode::Home if self.show_debug_panel => {
+                            // Go to top of debug panel
+                            if let Ok(buffer) = self.log_buffer.lock() {
+                                self.debug_scroll_offset = buffer.len().saturating_sub(1);
+                            }
+                        }
+                        KeyCode::End if self.show_debug_panel => {
+                            // Go to bottom of debug panel
+                            self.debug_scroll_offset = 0;
                         }
 
                         KeyCode::Char(c) => {
@@ -420,15 +422,12 @@ impl App {
     }
 
     pub fn step_next(&mut self) {
-        // Send step command to shucks/dang instead of using hardcoded logic
-        if let Err(e) = self
-            .shucks_client
-            .send_command_parsed(Packet::Command(GdbCommand::Resume(Resume::Step)))
-        {
+        if let Err(e) = self.controller.step() {
             self.command_history.push(format!("Error stepping: {e}"));
+            return;
         }
-        // Invalidate cache since execution state changed
-        self.invalidate_time_idx_cache();
+
+        self.refresh_all_views();
     }
 
     fn process_command(&mut self) {
@@ -477,52 +476,24 @@ impl App {
         }
     }
 
-    pub fn add_execution_info(&mut self) {
-        log::debug!("Adding execution info");
-        self.instruction_output.clear(); // Clear previous instruction output
-        self.instruction_output
-            .push("Process 1 stopped".to_string());
-        self.instruction_output
-            .push("* thread #1, stop reason = instruction step over".to_string());
+    fn refresh_all_views(&mut self) {
+        self.controller.refresh_all_views(&mut self.view_state);
+    }
 
-        // Get current PC from shucks
-        log::debug!("About to get current PC");
-        match self.shucks_client.get_current_pc() {
-            Ok(current_pc) => {
-                log::debug!("Successfully got current PC: 0x{current_pc}");
-                let frame_info = format!("    frame #0: 0x{current_pc}");
-                self.instruction_output.push(frame_info);
+    pub fn set_breakpoint(&mut self, address: u32) -> Result<(), String> {
+        self.controller.set_breakpoint(address)
+    }
 
-                // Try to get current instruction info from shucks
+    pub fn set_breakpoint_at_line(&mut self, file: &str, line: u64) -> Result<Vec<u32>, String> {
+        self.controller.set_breakpoint_at_line(file, line)
+    }
 
-                if let Ok(insts) = self.shucks_client.get_current_and_next_inst() {
-                    // Only show arrow for the first instruction (current PC)
-                    for (i, ainst) in insts.iter().enumerate() {
-                        let inst_pc = ainst.pc().as_u32();
-                        if i == 0 {
-                            // First instruction gets the arrow
-                            self.instruction_output
-                                .push(format!("->  0x{inst_pc:x}: {ainst}"));
-                        } else {
-                            // Subsequent instructions without arrow
-                            self.instruction_output
-                                .push(format!("    0x{inst_pc:x}: {ainst}"));
-                        }
-                    }
-                } else {
-                    self.instruction_output
-                        .push(format!("->  0x{current_pc}: <unable to get instructions>"));
-                }
-            }
-            Err(e) => {
-                log::error!("Failed to get current PC: {e}");
-                self.instruction_output
-                    .push(format!("Error getting PC: {e}"));
-            }
-        }
+    pub fn continue_execution(&mut self) -> Result<(), String> {
+        self.controller.continue_execution()
+    }
 
-        self.instruction_output
-            .push("Target 0: (No executable module.) stopped.".to_string());
+    pub fn invalidate_time_idx_cache(&mut self) {
+        self.controller.invalidate_time_index();
     }
 
     fn ui(&mut self, f: &mut Frame) {
@@ -569,7 +540,8 @@ impl App {
 
     fn render_instruction_panel_combined(&self, f: &mut Frame, area: ratatui::layout::Rect) {
         let items: Vec<ListItem> = self
-            .instruction_output
+            .view_state
+            .execution_lines
             .iter()
             .map(|line| {
                 let style = if line.starts_with("->") {
@@ -666,20 +638,30 @@ impl App {
     }
 
     fn render_debug_panel(&self, f: &mut Frame, area: ratatui::layout::Rect) {
-        // Get log messages from buffer - clone them to avoid lifetime issues
-        let log_messages = if let Ok(buffer) = self.log_buffer.lock() {
-            buffer
-                .iter()
-                .rev()
-                .take(area.height.saturating_sub(2) as usize)
-                .rev()
-                .cloned()
-                .collect::<Vec<_>>()
+        // Get all log messages from buffer
+        let all_log_messages = if let Ok(buffer) = self.log_buffer.lock() {
+            buffer.iter().cloned().collect::<Vec<_>>()
         } else {
             Vec::new()
         };
 
-        let items: Vec<ListItem> = log_messages
+        let available_height = area.height.saturating_sub(2) as usize; // Account for borders
+        let total_messages = all_log_messages.len();
+
+        // Calculate which messages to show based on scroll offset
+        let visible_messages = if total_messages > available_height {
+            let max_scroll = total_messages.saturating_sub(available_height);
+            let actual_scroll = self.debug_scroll_offset.min(max_scroll);
+            let start_idx = total_messages.saturating_sub(available_height + actual_scroll);
+            let end_idx = start_idx + available_height;
+
+            all_log_messages[start_idx..end_idx.min(total_messages)].to_vec()
+        } else {
+            // If all messages fit, show them all
+            all_log_messages
+        };
+
+        let items: Vec<ListItem> = visible_messages
             .iter()
             .map(|msg| {
                 let style = match msg.level {
@@ -697,10 +679,43 @@ impl App {
         let debug_panel = List::new(items).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Debug (d to toggle)"),
+                .title("Debug (d to toggle, PgUp/PgDn to scroll, Home/End)"),
         );
 
         f.render_widget(debug_panel, area);
+
+        // Add scrollbar if there are more messages than can fit
+        if total_messages > available_height {
+            let scrollbar_area = Rect {
+                x: area.x + area.width - 1,
+                y: area.y + 1,
+                width: 1,
+                height: area.height - 2,
+            };
+
+            let max_scroll = total_messages.saturating_sub(available_height);
+            let scrollbar_position = if max_scroll > 0 {
+                ((max_scroll - self.debug_scroll_offset.min(max_scroll)) as u16
+                    * scrollbar_area.height)
+                    / max_scroll as u16
+            } else {
+                0
+            };
+
+            let scrollbar = Scrollbar::default()
+                .orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"));
+
+            let mut scrollbar_state = ratatui::widgets::ScrollbarState::new(total_messages)
+                .position(
+                    total_messages.saturating_sub(
+                        available_height + self.debug_scroll_offset.min(max_scroll),
+                    ),
+                );
+
+            f.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+        }
     }
 
     fn render_split_view(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
@@ -730,28 +745,9 @@ impl App {
     }
 
     fn render_instruction_pane(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
-        // Get current and next instructions
-        let mut instruction_lines = Vec::new();
-
-        match self.shucks_client.get_current_and_next_inst() {
-            Ok(instructions) => {
-                for (i, inst) in instructions.iter().enumerate() {
-                    let pc = inst.pc().as_u32();
-                    if i == 0 {
-                        // Current instruction with arrow
-                        instruction_lines.push(format!("->  0x{pc:x}: {inst}"));
-                    } else {
-                        // Next instructions
-                        instruction_lines.push(format!("    0x{pc:x}: {inst}"));
-                    }
-                }
-            }
-            Err(e) => {
-                instruction_lines.push(format!("Error: {e}"));
-            }
-        }
-
-        let items: Vec<ListItem> = instruction_lines
+        let items: Vec<ListItem> = self
+            .view_state
+            .instruction_lines
             .iter()
             .map(|line| {
                 let style = if line.starts_with("->") {
@@ -777,60 +773,9 @@ impl App {
     }
 
     fn render_source_pane(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
-        let mut source_lines = Vec::new();
-
-        // Get current source line
-        match self.shucks_client.get_current_source_line() {
-            Ok(Some(current_line)) => {
-                source_lines.push(format!(
-                    "{}:{}",
-                    current_line
-                        .path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("unknown"),
-                    current_line.line
-                ));
-                source_lines.push("".to_string());
-
-                // Show current line with arrow
-                if let Some(ref text) = current_line.text {
-                    source_lines.push(format!("-> {}: {}", current_line.line, text));
-                } else {
-                    source_lines.push(format!("-> {}: <source not available>", current_line.line));
-                }
-
-                // Get next 3 consecutive source lines from the same file
-                match self
-                    .shucks_client
-                    .get_consecutive_source_lines_after_current(3)
-                {
-                    Ok(next_lines) => {
-                        for line in next_lines {
-                            if let Some(ref text) = line.text {
-                                source_lines.push(format!("   {}: {}", line.line, text));
-                            } else {
-                                source_lines
-                                    .push(format!("   {}: <source not available>", line.line));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        source_lines.push(format!("Error getting next lines: {e}"));
-                    }
-                }
-            }
-            Ok(None) => {
-                source_lines.push("Source Code:".to_string());
-                source_lines.push("No debug information available".to_string());
-            }
-            Err(e) => {
-                source_lines.push("Source Code:".to_string());
-                source_lines.push(format!("Error: {e}"));
-            }
-        }
-
-        let items: Vec<ListItem> = source_lines
+        let items: Vec<ListItem> = self
+            .view_state
+            .source_lines
             .iter()
             .map(|line| {
                 let style = if line.starts_with("->") {
@@ -856,43 +801,9 @@ impl App {
     }
 
     fn render_signal_panel(&mut self, f: &mut Frame, area: ratatui::layout::Rect) {
-        let mut signal_lines = Vec::new();
-
-        // Check if wave tracker is available
-        if self.shucks_client.wave_tracker.is_some() {
-            // Get current time index using cached version
-            match self.get_cached_time_idx() {
-                Ok(time_idx) => {
-                    // Now get the wave tracker reference
-                    if let Some(ref mut wave_tracker) = self.shucks_client.wave_tracker {
-                        let current_time = wave_tracker.get_current_time(time_idx as TimeTableIdx);
-                        signal_lines.push(format!("{} ps", current_time));
-                        signal_lines.push("".to_string()); // Empty line after time
-
-                        // Get signal names and values
-                        let signal_names = wave_tracker.get_signal_names();
-                        if signal_names.is_empty() {
-                            signal_lines.push("No signals selected".to_string());
-                            signal_lines.push("Use 'addsig' to add signals".to_string());
-                        } else {
-                            let signal_values = wave_tracker.get_values(time_idx as TimeTableIdx);
-
-                            // Display each signal with its value
-                            for (name, value) in signal_names.iter().zip(signal_values.iter()) {
-                                signal_lines.push(format!("{}: {}", name, value));
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    signal_lines.push(format!("Error getting time: {}", e));
-                }
-            }
-        } else {
-            signal_lines.push("no waves found".to_string());
-        }
-
-        let items: Vec<ListItem> = signal_lines
+        let items: Vec<ListItem> = self
+            .view_state
+            .signal_lines
             .iter()
             .enumerate()
             .map(|(i, line)| {
@@ -1031,7 +942,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     terminal.show_cursor()?;
 
     if let Err(err) = res {
-        println!("{err:?}");
+        log::error!("{err:?}");
     }
 
     Ok(())

@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     addr2line_stepper::Addr2lineStepper,
-    commands::{Base, GdbCommand},
+    commands::{Base, GdbCommand, Resume},
     response::{GdbResponse, RawGdbResponse},
     wavetracker::WaveformTracker,
     Packet,
@@ -23,6 +23,13 @@ pub struct Client {
     elf_info: Option<ElfInfo>,
     addr2line_stepper: Option<Addr2lineStepper>,
     pub wave_tracker: Option<WaveformTracker>,
+    cached_state: CachedState,
+}
+
+#[derive(Default, Clone)]
+pub struct CachedState {
+    pc: Option<PC>,
+    time_idx: Option<u64>,
 }
 
 #[derive(Copy, Clone)]
@@ -138,13 +145,14 @@ impl Client {
             addr2line_stepper: None,
             wave_tracker: None,
             response_buffer: Vec::new(),
+            cached_state: CachedState::default(),
         }
     }
 
     /// Drain any remaining data in the response buffer to ensure synchronization
     fn drain_response_buffer(&mut self) {
         if !self.response_buffer.is_empty() {
-            log::debug!(
+            log::warn!(
                 "Draining {} bytes from response buffer to maintain synchronization",
                 self.response_buffer.len()
             );
@@ -154,12 +162,12 @@ impl Client {
 
     pub fn send_command(&mut self, packet: &Packet) -> Result<RawGdbResponse, std::io::Error> {
         let pkt = packet.to_finished_packet(self.packet_scratch.as_mut_slice())?;
-        log::debug!("Sending packet: {packet:?}");
+
         self.strm.write_all(pkt.0)?;
 
         // Read response with proper packet handling
         let response = self.read_gdb_packet()?;
-        log::debug!("Read {} bytes, content is {:?}", response.len(), &response);
+        log::trace!("Read {} bytes, content is {:?}", response.len(), &response);
 
         let _tstr = String::from_utf8_lossy(response.as_slice());
 
@@ -199,11 +207,6 @@ impl Client {
                 Ok(n) => {
                     // Add new data to our response buffer
                     self.response_buffer.extend_from_slice(&temp_buffer[..n]);
-                    log::debug!(
-                        "Read {} bytes, buffer now has {} bytes",
-                        n,
-                        self.response_buffer.len()
-                    );
 
                     // Try to extract a complete packet from buffer - only check if we potentially have enough data
                     if self.response_buffer.len() >= 4 {
@@ -212,7 +215,7 @@ impl Client {
                             Self::find_first_complete_packet(&self.response_buffer)
                         {
                             self.response_buffer = remaining;
-                            log::debug!(
+                            log::trace!(
                                 "Extracted packet, {} bytes remaining in buffer",
                                 self.response_buffer.len()
                             );
@@ -256,7 +259,7 @@ impl Client {
                 Self::find_first_complete_packet(&self.response_buffer)
             {
                 self.response_buffer = remaining;
-                log::debug!(
+                log::trace!(
                     "Extracted packet, {} bytes remaining in buffer",
                     self.response_buffer.len()
                 );
@@ -283,24 +286,38 @@ impl Client {
         let mdata = RawGdbResponse::find_packet_data(buffer).ok();
         if let Some(data) = mdata {
             let remaining = buffer[data.entire_packet_len()..].to_vec();
-            log::debug!(
-                "input buffer is {}, output is {}. remaining is {}",
-                String::from_utf8_lossy(buffer),
-                String::from_utf8_lossy(data.as_slice()),
-                String::from_utf8_lossy(remaining.as_slice())
-            );
             return Some((data, remaining));
         }
         None
     }
 
-    pub fn send_command_parsed(
+    pub fn step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.send_command_parsed(Packet::Command(GdbCommand::Resume(Resume::Step)))?;
+        self.cached_state.time_idx = None;
+        self.cached_state.pc = None;
+        self.cached_state.pc = Some(self.get_current_pc()?);
+        self.cached_state.time_idx = Some(self.get_time_idx()?);
+        Ok(())
+    }
+
+    pub fn continue_execution(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.send_command_parsed(Packet::Command(GdbCommand::Resume(Resume::Continue)))?;
+        self.cached_state.time_idx = None;
+        self.cached_state.pc = None;
+
+        self.cached_state.pc = Some(self.get_current_pc()?);
+        self.cached_state.time_idx = Some(self.get_time_idx()?);
+
+        Ok(())
+    }
+
+    fn send_command_parsed(
         &mut self,
         packet: Packet,
     ) -> Result<GdbResponse, Box<dyn std::error::Error>> {
         let raw_response = self.send_command(&packet)?;
         let parsed_response = GdbResponse::parse_packet(raw_response, &packet)?;
-        log::debug!("Parsed response: {parsed_response} from input {packet:?}");
+        log::info!("Sent packet: {packet:?} and got response: {parsed_response:?}");
         Ok(parsed_response)
     }
 
@@ -311,19 +328,17 @@ impl Client {
     }
 
     pub fn initialize_gdb_session(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        log::debug!("Starting GDB initialization sequence...");
-
         // QStartNoAckMode must return OK per RSP
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QStartNoAckMode)))? {
             GdbResponse::Ack => {
-                log::debug!("QStartNoAckMode acknowledged with an ack");
+                log::trace!("QStartNoAckMode acknowledged with an ack");
                 let resp = self.pop_response()?;
                 if resp != GdbResponse::Ok {
                     return Err(format!("Expected Ok for QStartNoAckMode, got: {resp}").into());
                 }
             }
             GdbResponse::Ok => {
-                log::debug!("QStartNoAckMode acknowledged with an ok");
+                log::trace!("QStartNoAckMode acknowledged with an ok");
             }
             other => {
                 return Err(format!("Expected Ack for QStartNoAckMode, got: {other}").into());
@@ -339,7 +354,7 @@ impl Client {
                         format!("qSupported missing PacketSize in features: {features:?}").into(),
                     );
                 }
-                log::debug!("qSupported features: {features:?}");
+                log::trace!("qSupported features: {features:?}");
             }
             other => {
                 return Err(format!("Expected qSupported feature list, got: {other}").into());
@@ -347,10 +362,10 @@ impl Client {
         }
 
         // qfThreadInfo must return thread list (may be empty) or 'm...' chunk
-        log::debug!("About to send qfThreadInfo...");
+
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QfThreadInfo)))? {
             GdbResponse::ThreadInfo { threads, .. } => {
-                log::debug!("qfThreadInfo threads: {threads:?}");
+                log::trace!("qfThreadInfo threads: {threads:?}");
             }
             other => {
                 return Err(format!("Expected thread info for qfThreadInfo, got: {other}").into());
@@ -358,10 +373,10 @@ impl Client {
         }
 
         // qsThreadInfo should continue list or return end
-        log::debug!("About to send qsThreadInfo...");
+
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QsThreadInfo)))? {
             GdbResponse::ThreadInfo { threads, .. } => {
-                log::debug!("qsThreadInfo threads: {threads:?}");
+                log::trace!("qsThreadInfo threads: {threads:?}");
             }
             other => {
                 return Err(format!("Expected thread info for qsThreadInfo, got: {other}").into());
@@ -371,7 +386,7 @@ impl Client {
         // '?' must return a stop reply (Sxx or Txx)
         match self.send_command_parsed(Packet::Command(GdbCommand::Base(Base::QuestionMark)))? {
             GdbResponse::StopReply { signal, .. } => {
-                log::debug!("Got stop reply with signal 0x{signal:02x}");
+                log::trace!("Got stop reply with signal 0x{signal:02x}");
             }
             other => {
                 return Err(format!("Expected stop reply for '?', got: {other}").into());
@@ -387,18 +402,23 @@ impl Client {
                         data.len()
                     ).into());
                 }
-                log::debug!("Register read length OK: {} bytes", data.len());
+                log::trace!("Register read length OK: {} bytes", data.len());
             }
             other => {
                 return Err(format!("Expected RegisterData for 'g' (LowerG), got: {other}").into());
             }
         }
 
-        log::debug!("GDB initialization sequence complete!");
+        log::info!("GDB initialization sequence complete!");
         Ok(())
     }
 
     pub fn get_time_idx(&mut self) -> Result<u64, Box<dyn std::error::Error>> {
+        return Ok(35);
+        if let Some(time_idx) = self.cached_state.time_idx {
+            return Ok(time_idx);
+        }
+
         let rv = self
             .send_monitor_command("time_idx")
             .inspect(|val| println!("{val}"))
@@ -616,6 +636,10 @@ impl Client {
 
     /// Get the current program counter (PC) from registers
     pub fn get_current_pc(&mut self) -> Result<PC, Box<dyn std::error::Error>> {
+        if let Some(pc) = self.cached_state.pc {
+            return Ok(pc);
+        }
+
         // Add a small delay to avoid rapid command sending that can cause response ordering issues
 
         let registers =
@@ -623,7 +647,7 @@ impl Client {
 
         match registers {
             crate::response::GdbResponse::RegisterData { data } => {
-                log::debug!("Got RegisterData with {} bytes", data.len());
+                log::trace!("Got RegisterData with {} bytes", data.len());
                 if data.len() < 132 {
                     return Err(format!(
                         "Register data too short to contain PC (got {} bytes, need 132)",
