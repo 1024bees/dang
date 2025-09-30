@@ -1,7 +1,7 @@
 JPDB: GDB for waveforms
 -----------------------
 
-JPDB is a GDB inspired debugger for debugging pre-silicon CPUs. you can step through code, add breakpoints, and look at waveform values as you do. pretty neat (
+JPDB is a GDB inspired debugger for debugging pre-silicon CPUs. you can step through code, add breakpoints, and look at waveform values as you do. pretty neat !
 
 ### Example
 
