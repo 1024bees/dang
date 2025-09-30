@@ -3,6 +3,7 @@ use shucks::{Client, TimeTableIdx, Var};
 pub struct DebuggerModel {
     client: Client,
     cached_time_idx: Option<u64>,
+    terminated: bool,
 }
 
 pub struct ExecutionSnapshot {
@@ -25,19 +26,38 @@ impl DebuggerModel {
         Self {
             client,
             cached_time_idx: None,
+            terminated: false,
         }
     }
 
     pub fn step(&mut self) -> ModelResult<()> {
-        self.client.step().map_err(|e| e.to_string())?;
+        if self.terminated {
+            return Err("Process has terminated".to_string());
+        }
+
+        let still_alive = self.client.step().map_err(|e| e.to_string())?;
+        if !still_alive {
+            self.terminated = true;
+            return Err("Process has terminated".to_string());
+        }
+
         self.invalidate_time_index();
         Ok(())
     }
 
     pub fn continue_execution(&mut self) -> ModelResult<()> {
-        self.client
+        if self.terminated {
+            return Err("Process has terminated".to_string());
+        }
+
+        let still_alive = self.client
             .continue_execution()
             .map_err(|e| e.to_string())?;
+        if !still_alive {
+            self.terminated = true;
+            return Err("Process has terminated".to_string());
+        }
+
         self.invalidate_time_index();
         Ok(())
     }
@@ -55,6 +75,13 @@ impl DebuggerModel {
     }
 
     pub fn fetch_execution_snapshot(&mut self) -> ModelResult<ExecutionSnapshot> {
+        if self.terminated {
+            return Ok(ExecutionSnapshot {
+                summary_lines: vec!["Process has terminated".to_string()],
+                instruction_lines: vec!["Process has terminated".to_string()],
+            });
+        }
+
         let mut summary_lines = Vec::new();
         summary_lines.push("Process 1 stopped".to_string());
         summary_lines.push("* thread #1, stop reason = instruction step over".to_string());
@@ -101,6 +128,12 @@ impl DebuggerModel {
     }
 
     pub fn fetch_source_snapshot(&mut self) -> ModelResult<SourceSnapshot> {
+        if self.terminated {
+            return Ok(SourceSnapshot {
+                lines: vec!["Process has terminated".to_string()],
+            });
+        }
+
         let mut lines = Vec::new();
 
         match self.client.get_current_source_line() {
@@ -151,6 +184,12 @@ impl DebuggerModel {
     }
 
     pub fn fetch_signal_snapshot(&mut self) -> ModelResult<SignalSnapshot> {
+        if self.terminated {
+            return Ok(SignalSnapshot {
+                lines: vec!["Process has terminated".to_string()],
+            });
+        }
+
         if self.client.wave_tracker.is_none() {
             return Ok(SignalSnapshot {
                 lines: vec!["no waves found".to_string()],
@@ -196,6 +235,10 @@ impl DebuggerModel {
 
     pub fn invalidate_time_index(&mut self) {
         self.cached_time_idx = None;
+    }
+
+    pub fn is_terminated(&self) -> bool {
+        self.terminated
     }
 
     fn get_time_index(&mut self) -> ModelResult<u64> {
