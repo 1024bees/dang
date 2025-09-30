@@ -58,6 +58,8 @@ pub enum UserCommand {
     Toggle,
     Addsig,
     Debug,
+    Surfer,
+    SurferConnect,
 }
 
 impl UserCommand {
@@ -199,6 +201,25 @@ impl UserCommand {
                 }
                 Ok(())
             }
+            UserCommand::Surfer => {
+                //app.launch_surfer()
+                //    .map_err(|e| format!("Failed to launch Surfer: {}", e))?;
+                app.command_history
+                    .push("Surfer launched successfully".to_string());
+                Ok(())
+            }
+            UserCommand::SurferConnect => {
+                let addr = if args.trim().is_empty() {
+                    "127.0.0.1:3333".to_string()
+                } else {
+                    args.trim().to_string()
+                };
+                app.connect_to_surfer(&addr)
+                    .map_err(|e| format!("Failed to connect to Surfer: {}", e))?;
+                app.command_history
+                    .push(format!("Connected to Surfer at {}", addr));
+                Ok(())
+            }
         }
     }
 
@@ -215,6 +236,8 @@ impl UserCommand {
             UserCommand::Toggle => "toggle",
             UserCommand::Addsig => "addsig",
             UserCommand::Debug => "debug",
+            UserCommand::Surfer => "surfer",
+            UserCommand::SurferConnect => "surferconnect",
         }
     }
 
@@ -231,6 +254,8 @@ impl UserCommand {
             UserCommand::Toggle => &["toggle", "t"],
             UserCommand::Addsig => &["addsig", "as"],
             UserCommand::Debug => &["debug", "d"],
+            UserCommand::Surfer => &["surfer", "sf"],
+            UserCommand::SurferConnect => &["surferconnect", "sfc"],
         }
     }
 
@@ -247,6 +272,8 @@ impl UserCommand {
             UserCommand::Toggle => "Toggle split view (instructions | source code)",
             UserCommand::Addsig => "Open floating window to add waveform signals via fuzzy search",
             UserCommand::Debug => "Toggle debug panel",
+            UserCommand::Surfer => "Launch Surfer waveform viewer and connect to it",
+            UserCommand::SurferConnect => "Connect to a running Surfer instance",
         }
     }
 
@@ -263,6 +290,8 @@ impl UserCommand {
             UserCommand::Toggle => "toggle",
             UserCommand::Addsig => "addsig",
             UserCommand::Debug => "debug",
+            UserCommand::Surfer => "surfer",
+            UserCommand::SurferConnect => "surferconnect [address:port]",
         }
     }
 
@@ -284,6 +313,8 @@ impl UserCommand {
             UserCommand::Toggle => &["toggle", "t"],
             UserCommand::Addsig => &["addsig", "as"],
             UserCommand::Debug => &["debug", "d"],
+            UserCommand::Surfer => &["surfer", "sf"],
+            UserCommand::SurferConnect => &["surferconnect", "sfc", "surferconnect 127.0.0.1:3333"],
         }
     }
 
@@ -300,6 +331,8 @@ impl UserCommand {
             UserCommand::Toggle,
             UserCommand::Addsig,
             UserCommand::Debug,
+            UserCommand::Surfer,
+            UserCommand::SurferConnect,
         ]
     }
 }

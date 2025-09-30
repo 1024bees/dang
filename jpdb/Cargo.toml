@@ -15,3 +15,5 @@ shucks = { path = "../shucks" }
 dang = { path = "../dang" }
 log = { workspace = true }
 env_logger = { workspace = true }
+serde_json = "1.0"
+libsurfer = { git = "https://gitlab.com/surfer-project/surfer" }

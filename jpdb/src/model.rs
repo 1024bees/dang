@@ -237,6 +237,10 @@ impl DebuggerModel {
         self.cached_time_idx = None;
     }
 
+    pub fn get_time_idx(&mut self) -> ModelResult<u64> {
+        self.get_time_index()
+    }
+
     fn get_time_index(&mut self) -> ModelResult<u64> {
         if let Some(idx) = self.cached_time_idx {
             return Ok(idx);

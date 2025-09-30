@@ -2,6 +2,7 @@ use std::{
     collections::VecDeque,
     io,
     net::TcpListener,
+    path::Path,
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -10,10 +11,12 @@ use std::{
 mod model;
 mod user_commands;
 mod view;
+mod wcp_client;
 
 use model::DebuggerModel;
 use user_commands::CommandRegistry;
 use view::ViewState;
+use wcp_client::WcpClient;
 
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -243,6 +246,9 @@ pub struct App {
     addsig_state: AddSigState,
     // Help modal state
     help_modal_state: HelpModalState,
+    // WCP client for Surfer integration
+    wcp_client: Option<WcpClient>,
+    surfer_process: Option<std::process::Child>,
 }
 
 impl Default for App {
@@ -336,6 +342,8 @@ impl Default for App {
             history_index: None,
             addsig_state: AddSigState::new(),
             help_modal_state: HelpModalState::new(),
+            wcp_client: None,
+            surfer_process: None,
         }
     }
 }
@@ -536,6 +544,11 @@ impl App {
         }
 
         self.refresh_all_views();
+
+        // Sync waveform position if connected to Surfer
+        if let Err(e) = self.sync_waveform_position() {
+            log::warn!("Failed to sync waveform position: {}", e);
+        }
     }
 
     fn process_command(&mut self) {
@@ -624,11 +637,64 @@ impl App {
     }
 
     pub fn continue_execution(&mut self) -> Result<(), String> {
-        self.model.continue_execution()
+        self.model.continue_execution()?;
+
+        // Sync waveform position if connected to Surfer
+        if let Err(e) = self.sync_waveform_position() {
+            log::warn!("Failed to sync waveform position: {}", e);
+        }
+
+        Ok(())
     }
 
     pub fn invalidate_time_idx_cache(&mut self) {
         self.model.invalidate_time_index();
+    }
+
+    /// Launch Surfer waveform viewer and connect to it via WCP
+    pub fn launch_surfer(&mut self, wave_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        use std::process::{Command, Stdio};
+
+        //TODO: get a random port, i am lazy
+        let wcp_port = 3333;
+
+        let child = Command::new("surfer")
+            .arg(wave_path.to_str().ok_or("Invalid wave path")?)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+
+        self.surfer_process = Some(child);
+
+        // Give Surfer time to start
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+
+        // Connect to Surfer via WCP
+        self.connect_to_surfer(&format!("127.0.0.1:{}", wcp_port))?;
+
+        Ok(())
+    }
+
+    /// Connect to a running Surfer instance via WCP
+    pub fn connect_to_surfer(&mut self, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let client = WcpClient::connect(addr)?;
+        self.wcp_client = Some(client);
+
+        // Sync current waveform state
+        self.sync_waveform_position()?;
+
+        Ok(())
+    }
+
+    /// Sync the waveform viewer to the current simulation time
+    fn sync_waveform_position(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(ref mut wcp) = self.wcp_client {
+            if let Ok(time_idx) = self.model.get_time_idx() {
+                wcp.set_cursor(time_idx)?;
+            }
+        }
+        Ok(())
     }
 
     fn ui(&mut self, f: &mut Frame) {
