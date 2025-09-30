@@ -452,11 +452,18 @@ impl Client {
             return Ok(time_idx);
         }
 
-        let rv = self
-            .send_monitor_command("time_idx")
-            .map(|output| output.trim().parse::<u64>().map_err(|e| e.into()))?;
+        let output = self.send_monitor_command("time_idx")?;
+        let trimmed = output.trim();
 
-        rv
+        trimmed.parse::<u64>().map_err(|e| {
+            format!(
+                "Failed to parse time_idx response '{}' (bytes: {:?}): {}",
+                trimmed,
+                trimmed.as_bytes(),
+                e
+            )
+            .into()
+        })
     }
 
     /// Send a monitor command to the GDB server

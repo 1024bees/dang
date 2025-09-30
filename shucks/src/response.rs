@@ -294,21 +294,26 @@ impl GdbResponse {
                 // Monitor responses often come in the format "O<hex-encoded-text>"
                 // where 'O' indicates console output
                 let output = if content.starts_with(b"O") && content.len() > 1 {
-                    // Strip the 'O' prefix and decode the remaining hex
+                    // Strip the 'O' prefix, decode run-length encoding, then decode hex
                     let hex_content = &content[1..];
-                    if Self::is_hex_data(hex_content) {
-                        match Self::decode_hex(hex_content) {
+
+                    // Decode run-length encoding first (handles '*' markers)
+                    let run_length_decoded = Self::decode_run_length(hex_content);
+
+                    if Self::is_hex_data(&run_length_decoded) {
+                        match Self::decode_hex(&run_length_decoded) {
                             Ok(decoded_bytes) => {
                                 String::from_utf8_lossy(&decoded_bytes).to_string()
                             }
-                            Err(e) => String::from_utf8_lossy(content).to_string(),
+                            Err(_e) => String::from_utf8_lossy(content).to_string(),
                         }
                     } else {
                         String::from_utf8_lossy(content).to_string()
                     }
-                } else if Self::is_hex_data(content) {
-                    // Try to decode as hex first
-                    match Self::decode_hex(content) {
+                } else if Self::is_hex_data_or_run_length(content) {
+                    // Decode run-length encoding first, then try hex decode
+                    let run_length_decoded = Self::decode_run_length(content);
+                    match Self::decode_hex(&run_length_decoded) {
                         Ok(decoded_bytes) => String::from_utf8_lossy(&decoded_bytes).to_string(),
                         Err(e) => {
                             log::error!("error is {e:?} when decoding hex data");
