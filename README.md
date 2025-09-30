@@ -1,9 +1,11 @@
 JPDB: GDB for waveforms
 -----------------------
 
-JPDB is a GDB inspired debugger for debugging pre-silicon CPUs.
+JPDB is a GDB inspired debugger for debugging pre-silicon CPUs. you can step through code, add breakpoints, and look at waveform values as you do. pretty neat (
 
-https://www.youtube.com/watch?v=EOo1aG_wcJg
+### Example
+
+[![In Action](https://img.youtube.com/vi/EOo1aG_wcJg/0.jpg)](https://www.youtube.com/watch?v=EOo1aG_wcJg)
 
 
 ### Usage
@@ -17,15 +19,18 @@ to get started
 ```bash
 jpdb test_data/ibex/sim.fst --mapping-path test_data/ibex/signal_get.py
 ```
+### requirements
 
-your system python must be 3.10 or newer, otherwise jpdb might bark at you 
+your system python must be 3.10 or newer, otherwise jpdb might bark at you and not work
+
+if you want to use any of the surfer features, you should have surfer installed and on $PATH. WCP support is required for surfer integration
 
 ### installation 
 
 jpdb can be installed via cargo 
 
 ```bash 
-cargo install jpdb --locked
+cargo install --git https://github.com/1024bees/dang jpdb
 ```
 
 the releases page on github
