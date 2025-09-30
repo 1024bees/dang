@@ -291,26 +291,58 @@ impl Client {
         None
     }
 
-    pub fn step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.send_command_parsed(Packet::Command(GdbCommand::Resume(Resume::Step)))?;
+    pub fn step(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
+        let resp = self.send_command_parsed(Packet::Command(GdbCommand::Resume(Resume::Step)))?;
+        if let crate::response::GdbResponse::StopReply { reason, .. } = &resp {
+            match reason {
+                crate::response::StopReason::ProcessExit { code } => {
+                    log::info!("Program exited with code 0x{:02x}", code);
+                    return Ok(false);
+                }
+                crate::response::StopReason::SignalTermination(sig) => {
+                    log::info!("Program terminated with signal 0x{:02x}", sig);
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
+
         self.cached_state.time_idx = None;
         self.cached_state.pc = None;
         self.cached_state.pc = Some(self.get_current_pc()?);
         self.cached_state.time_idx = Some(self.get_time_idx()?);
-        Ok(())
+        Ok(true)
     }
 
-    pub fn continue_execution(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    //returns false
+    pub fn continue_execution(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
         let resp =
             self.send_command_parsed(Packet::Command(GdbCommand::Resume(Resume::Continue)))?;
         self.cached_state.time_idx = None;
         self.cached_state.pc = None;
 
+        // Check if the program has terminated
+        if let crate::response::GdbResponse::StopReply { reason, .. } = &resp {
+            match reason {
+                crate::response::StopReason::ProcessExit { code } => {
+                    log::info!("Program exited with code 0x{:02x}", code);
+                    return Ok(false);
+                }
+                crate::response::StopReason::SignalTermination(sig) => {
+                    log::info!("Program terminated with signal 0x{:02x}", sig);
+                    return Ok(false);
+                }
+                _ => {
+                    log::info!("cont exec reason: {reason:?}");
+                }
+            }
+        }
+
         self.cached_state.pc = Some(self.get_current_pc()?);
         self.cached_state.time_idx = Some(self.get_time_idx()?);
         log::info!("Continue execution response: {resp:?}");
 
-        Ok(())
+        Ok(true)
     }
 
     pub fn send_command_parsed(
@@ -1121,6 +1153,88 @@ mod tests {
                         e
                     );
                 }
+            }
+        }
+
+        // Kill the handle by not waiting for it to complete
+        drop(handle);
+    }
+
+    #[test]
+    fn test_continue_past_program_end() {
+        crate::init_test_logger();
+        let (listener, port) = create_test_listener();
+
+        // Start dang GDB stub in a separate thread
+        let handle = start_dang_instance(listener);
+
+        // Give the server time to start
+        sleep(Duration::from_millis(1000));
+
+        // Connect with the client to actual dang instance
+        let mut client = Client::new_with_port(port);
+        sleep(Duration::from_millis(200));
+
+        client
+            .initialize_gdb_session()
+            .expect("failed to init gdb session for continue_past_end test");
+        sleep(Duration::from_millis(100));
+
+        client.load_elf_info().expect("Failed to load elf info");
+
+        // Continue execution repeatedly until we reach the end
+        // The test program should eventually finish
+        let mut last_time_idx = 0;
+        let mut same_time_count = 0;
+
+        for i in 0..100 {
+            log::info!("Continue attempt {}", i + 1);
+
+            let result = client.continue_execution();
+
+            match result {
+                Ok(()) => {
+                    // Check if time index is still advancing
+                    if let Ok(current_time) = client.get_time_idx() {
+                        log::info!("Time index: {}", current_time);
+
+                        if current_time == last_time_idx {
+                            same_time_count += 1;
+                            log::info!("Time index hasn't changed (count: {})", same_time_count);
+
+                            // If time hasn't advanced for several iterations, we've reached the end
+                            if same_time_count >= 3 {
+                                log::info!("Program has reached the end at time {}", current_time);
+                                break;
+                            }
+                        } else {
+                            same_time_count = 0;
+                        }
+
+                        last_time_idx = current_time;
+                    }
+                }
+                Err(e) => {
+                    log::info!("Continue failed (expected at program end): {:?}", e);
+                    break;
+                }
+            }
+        }
+
+        // Now try to continue past the end - this is where the bug should occur
+        log::info!("Attempting to continue past program end...");
+        let result = client.continue_execution();
+
+        match result {
+            Ok(()) => {
+                log::info!("Continue past end succeeded (unexpected?)");
+                // If it succeeds, verify the state is still valid
+                let pc_result = client.get_current_pc();
+                let time_result = client.get_time_idx();
+            }
+            Err(e) => {
+                log::info!("Continue past end failed with error: {:?}", e);
+                // This is expected - the test should document the error behavior
             }
         }
 

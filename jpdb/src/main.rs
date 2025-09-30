@@ -779,14 +779,6 @@ impl App {
             };
 
             let max_scroll = total_messages.saturating_sub(available_height);
-            let scrollbar_position = if max_scroll > 0 {
-                ((max_scroll - self.debug_scroll_offset.min(max_scroll)) as u16
-                    * scrollbar_area.height)
-                    / max_scroll as u16
-            } else {
-                0
-            };
-
             let scrollbar = Scrollbar::default()
                 .orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("▲"))
@@ -1066,7 +1058,8 @@ impl App {
                     || line.starts_with("Description:")
                     || line.starts_with("Usage:")
                     || line.starts_with("Aliases:")
-                    || line.starts_with("Examples:") {
+                    || line.starts_with("Examples:")
+                {
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD)
@@ -1100,12 +1093,9 @@ impl App {
                 .begin_symbol(Some("▲"))
                 .end_symbol(Some("▼"));
 
-            let mut scrollbar_state = ratatui::widgets::ScrollbarState::new(total_lines)
-                .position(
-                    total_lines.saturating_sub(
-                        available_height + scroll_offset.min(max_scroll),
-                    ),
-                );
+            let mut scrollbar_state = ratatui::widgets::ScrollbarState::new(total_lines).position(
+                total_lines.saturating_sub(available_height + scroll_offset.min(max_scroll)),
+            );
 
             f.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
         }
@@ -1117,9 +1107,11 @@ impl App {
             width: popup_area.width,
             height: 1,
         };
-        let nav_text = Paragraph::new("↑↓: Scroll | PgUp/PgDn: Page | Home/End: Top/Bottom | Esc/Enter/q: Close")
-            .style(Style::default().fg(Color::Gray))
-            .alignment(Alignment::Center);
+        let nav_text = Paragraph::new(
+            "↑↓: Scroll | PgUp/PgDn: Page | Home/End: Top/Bottom | Esc/Enter/q: Close",
+        )
+        .style(Style::default().fg(Color::Gray))
+        .alignment(Alignment::Center);
         f.render_widget(nav_text, help_area);
     }
 }

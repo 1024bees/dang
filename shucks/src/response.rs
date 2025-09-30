@@ -85,6 +85,7 @@ pub enum StopReason {
     Watchpoint { addr: u32 },
     SingleStep,
     ProcessExit { code: u8 },
+    SignalTermination(u8),
     Unknown,
 }
 
@@ -232,8 +233,8 @@ impl GdbResponse {
                 Ok(GdbResponse::Error { code })
             }
 
-            // Stop reply packet (Sxx or Txx...)
-            content if content.len() >= 3 && (content[0] == b'S' || content[0] == b'T') => {
+            // Stop reply packet (Sxx, Txx, Wxx, or Xxx)
+            content if content.len() >= 3 && (content[0] == b'S' || content[0] == b'T' || content[0] == b'W' || content[0] == b'X') => {
                 Self::parse_stop_reply(content)
             }
 
@@ -373,21 +374,30 @@ impl GdbResponse {
         })
     }
 
-    /// Parse stop reply packets (S or T packets)
+    /// Parse stop reply packets (S, T, W, or X packets)
     fn parse_stop_reply(content: &[u8]) -> Result<Self, ParseError> {
         if content.len() < 3 {
             return Err(ParseError::InvalidFormat("stop reply packet too short"));
         }
 
-        let signal_str = str::from_utf8(&content[1..3]).map_err(|_| ParseError::InvalidHex)?;
-        let signal = u8::from_str_radix(signal_str, 16).map_err(|_| ParseError::InvalidHex)?;
+        let packet_type = content[0];
+        let value_str = str::from_utf8(&content[1..3]).map_err(|_| ParseError::InvalidHex)?;
+        let value = u8::from_str_radix(value_str, 16).map_err(|_| ParseError::InvalidHex)?;
 
-        // For now, we'll parse just the basic signal
-        // TODO: Parse additional stop reply information (thread ID, registers, etc.)
+        // Determine the reason based on packet type
+        let reason = match packet_type {
+            b'S' | b'T' => StopReason::Signal(value),
+            b'W' => StopReason::ProcessExit { code: value },
+            b'X' => StopReason::SignalTermination(value),
+            _ => return Err(ParseError::InvalidFormat("unknown stop reply packet type")),
+        };
+
+        // For now, we'll parse just the basic signal/code
+        // TODO: Parse additional stop reply information (thread ID, registers, process:pid extensions, etc.)
         Ok(GdbResponse::StopReply {
-            signal,
+            signal: value,
             thread_id: None,
-            reason: StopReason::Signal(signal),
+            reason,
         })
     }
 
@@ -759,5 +769,69 @@ mod tests {
 
         let hex_decoded = GdbResponse::decode_hex(&run_length_decoded).unwrap();
         assert_eq!(hex_decoded, vec![0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_parse_w_packet_normal_exit() {
+        crate::init_test_logger();
+        // Test W packet - normal process exit with code 0
+        // Checksum: W(87) + 0(48) + 0(48) = 183 = 0xb7
+        let packet = b"$W00#b7";
+        let response = test_parse(packet).expect("Failed to parse W00 packet");
+
+        if let GdbResponse::StopReply { signal, reason, .. } = response {
+            assert_eq!(signal, 0x00);
+            assert_eq!(reason, StopReason::ProcessExit { code: 0x00 });
+        } else {
+            panic!("Expected StopReply with ProcessExit, got: {:?}", response);
+        }
+    }
+
+    #[test]
+    fn test_parse_x_packet_signal_termination() {
+        crate::init_test_logger();
+        // Test X packet - termination with signal 0x11 (the original issue)
+        // Checksum: X(88) + 1(49) + 1(49) = 186 = 0xba
+        let packet = b"$X11#ba";
+        let response = test_parse(packet).expect("Failed to parse X11 packet");
+
+        if let GdbResponse::StopReply { signal, reason, .. } = response {
+            assert_eq!(signal, 0x11);
+            assert_eq!(reason, StopReason::SignalTermination(0x11));
+        } else {
+            panic!("Expected StopReply with SignalTermination, got: {:?}", response);
+        }
+    }
+
+    #[test]
+    fn test_parse_w_packet_nonzero_exit() {
+        crate::init_test_logger();
+        // Test W packet with non-zero exit code
+        // Checksum: W(87) + 0(48) + 1(49) = 184 = 0xb8
+        let packet = b"$W01#b8";
+        let response = test_parse(packet).expect("Failed to parse W01 packet");
+
+        if let GdbResponse::StopReply { signal, reason, .. } = response {
+            assert_eq!(signal, 0x01);
+            assert_eq!(reason, StopReason::ProcessExit { code: 0x01 });
+        } else {
+            panic!("Expected StopReply with ProcessExit, got: {:?}", response);
+        }
+    }
+
+    #[test]
+    fn test_parse_x_packet_different_signals() {
+        crate::init_test_logger();
+        // Test X packet with SIGSEGV (signal 11 decimal = 0x0b)
+        // Checksum: X(88) + 0(48) + b(98) = 234 = 0xea
+        let packet = b"$X0b#ea";
+        let response = test_parse(packet).expect("Failed to parse X0b packet");
+
+        if let GdbResponse::StopReply { signal, reason, .. } = response {
+            assert_eq!(signal, 0x0b);
+            assert_eq!(reason, StopReason::SignalTermination(0x0b));
+        } else {
+            panic!("Expected StopReply with SignalTermination, got: {:?}", response);
+        }
     }
 }

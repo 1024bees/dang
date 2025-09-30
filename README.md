@@ -94,3 +94,19 @@ no, but it could integrate with vaporview or surfer fairly easily
 `wellen` library made this easy, thank you kevin laeufer
 
 also tom verbeure did something similar a while back, shoutout
+
+
+### Internals 
+
+JPDB is really a few things glued together 
+
+* dang: a GDB server for pre-sillicon CPUs
+* shucks: a GDB client, written for this project specfically, with some extra hooks for interacting with waves via `wellen`
+* a tui, showing the state taken out of shucks
+
+when i was starting this out, the point was to start out with just dang and make people bring their own GDB. but two things quickly became clear: 
+
+1. its kind of annoying to get your own gdb. i develop on a mac, and building gdb from scratch on a mac is non trivial. distributing it broadly for people to actually use also kind of sucks
+2. having control over the TUI would be useful for more aggresively integrating with wave specific stuff
+
+you can use these libaries on their own. they should _just_work_ hopefully
