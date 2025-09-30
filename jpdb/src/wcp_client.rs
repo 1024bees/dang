@@ -1,8 +1,6 @@
 use libsurfer::wcp::proto::{WcpCSMessage, WcpCommand};
-use num::BigInt;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
 use std::time::Duration;
 
 /// WCP (Waveform Control Protocol) client for controlling Surfer waveform viewer
@@ -38,7 +36,7 @@ impl WcpClient {
         let message_str = serde_json::to_string(&message)?;
 
         // Debug: log the JSON being sent
-        log::info!("Sending WCP message: {}", message_str);
+        log::info!("Sending WCP message: {message_str}");
 
         // Write message followed by null terminator (not newline!)
         self.stream.write_all(message_str.as_bytes())?;
@@ -58,7 +56,9 @@ impl WcpClient {
                     buffer.push(byte[0]);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
-                    return Err(format!("Timeout waiting for response from WCP server").into());
+                    return Err("Timeout waiting for response from WCP server"
+                        .to_string()
+                        .into());
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     return Err(format!(
@@ -82,7 +82,7 @@ impl WcpClient {
     }
 
     /// Navigate to a specific timestamp in the waveform (time in picoseconds)
-    pub fn goto_time(&mut self, time_ps: u64) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn goto_time(&mut self, _time_ps: u64) -> Result<(), Box<dyn std::error::Error>> {
         //TODO: this looks to be buggy on the surfer side, from what i can tell.
         //let command = WcpCommand::set_viewport_to {
         //    timestamp: BigInt::from(time_ps),

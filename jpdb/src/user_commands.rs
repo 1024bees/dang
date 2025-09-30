@@ -204,7 +204,7 @@ impl UserCommand {
             UserCommand::Surfer => {
                 let wave_path = app.cli_args.wave_path.clone();
                 app.launch_surfer(&wave_path)
-                    .map_err(|e| format!("Failed to launch Surfer: {}", e))?;
+                    .map_err(|e| format!("Failed to launch Surfer: {e}"))?;
                 app.command_history
                     .push("Surfer launched successfully".to_string());
                 Ok(())
@@ -217,9 +217,9 @@ impl UserCommand {
                     args.trim().to_string()
                 };
                 app.connect_to_surfer(&addr)
-                    .map_err(|e| format!("Failed to connect to Surfer: {}", e))?;
+                    .map_err(|e| format!("Failed to connect to Surfer: {e}"))?;
                 app.command_history
-                    .push(format!("Connected to Surfer at {}", addr));
+                    .push(format!("Connected to Surfer at {addr}"));
                 Ok(())
             }
         }

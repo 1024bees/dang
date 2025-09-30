@@ -543,7 +543,7 @@ impl App {
 
         // Sync waveform position if connected to Surfer
         if let Err(e) = self.sync_waveform_position() {
-            log::warn!("Failed to sync waveform position: {}", e);
+            log::warn!("Failed to sync waveform position: {e}");
         }
     }
 
@@ -637,7 +637,7 @@ impl App {
 
         // Sync waveform position if connected to Surfer
         if let Err(e) = self.sync_waveform_position() {
-            log::warn!("Failed to sync waveform position: {}", e);
+            log::warn!("Failed to sync waveform position: {e}");
         }
 
         Ok(())
@@ -679,7 +679,7 @@ impl App {
         std::thread::sleep(std::time::Duration::from_millis(1000));
 
         // Connect to Surfer via WCP
-        self.connect_to_surfer(&format!("127.0.0.1:{}", wcp_port))?;
+        self.connect_to_surfer(&format!("127.0.0.1:{wcp_port}"))?;
 
         Ok(())
     }
@@ -688,7 +688,7 @@ impl App {
     pub fn connect_to_surfer(&mut self, addr: &str) -> Result<(), Box<dyn std::error::Error>> {
         let client = WcpClient::connect(addr)?;
         self.wcp_client = Some(client);
-        log::info!("Connected to Surfer via WCP at {}", addr);
+        log::info!("Connected to Surfer via WCP at {addr}");
 
         // Sync current waveform state
         self.sync_waveform_position()?;
