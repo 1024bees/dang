@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+mod cli;
 mod model;
 mod user_commands;
 mod view;
@@ -249,10 +250,12 @@ pub struct App {
     // WCP client for Surfer integration
     wcp_client: Option<WcpClient>,
     surfer_process: Option<std::process::Child>,
+    // CLI arguments for reference
+    cli_args: cli::JpdbArgs,
 }
 
-impl Default for App {
-    fn default() -> App {
+impl App {
+    fn new(cli_args: cli::JpdbArgs) -> App {
         // Initialize custom logging system
         let (logger, log_buffer) = AppLogger::new();
         log::set_boxed_logger(Box::new(logger))
@@ -266,18 +269,13 @@ impl Default for App {
             .expect("Failed to get local addr")
             .port();
 
+        // Clone paths for thread
+        let wave_path = cli_args.wave_path.clone();
+        let mapping_path = cli_args.mapping_path.clone();
+        let elf_path = cli_args.elf.clone();
+
         // Start dang GDB stub in a separate thread
         let dang_handle = thread::spawn(move || {
-            let workspace_root = std::env::current_dir()
-                .expect("Failed to get current dir")
-                .parent()
-                .expect("Failed to get parent dir")
-                .to_path_buf();
-
-            let wave_path = workspace_root.join("test_data/ibex/sim.fst");
-            let mapping_path = workspace_root.join("test_data/ibex/signal_get.py");
-            let elf_path = workspace_root.join("test_data/ibex/hello_test.elf");
-
             dang::start_with_args_and_listener_silent(wave_path, mapping_path, elf_path, listener)
                 .expect("Failed to start dang");
         });
@@ -287,17 +285,11 @@ impl Default for App {
 
         // Create shucks client connected to dang
         let mut shucks_client = Client::new_with_port(port);
-        let workspace_root = std::env::current_dir()
-            .expect("Failed to get current dir")
-            .parent()
-            .expect("Failed to get parent dir")
-            .to_path_buf();
-        let wave_path = workspace_root.join("test_data/ibex/sim.fst");
 
         shucks_client.initialize_gdb_session().expect("");
         let _ = shucks_client.load_elf_info();
         shucks_client
-            .load_waveform(wave_path)
+            .load_waveform(cli_args.wave_path.clone())
             .expect("Failed to load waveform");
         thread::sleep(Duration::from_millis(300));
 
@@ -344,11 +336,10 @@ impl Default for App {
             help_modal_state: HelpModalState::new(),
             wcp_client: None,
             surfer_process: None,
+            cli_args,
         }
     }
-}
 
-impl App {
     fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
         loop {
             terminal.draw(|f| self.ui(f))?;
@@ -1238,13 +1229,16 @@ impl App {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse command line arguments
+    let cli_args: cli::JpdbArgs = argh::from_env();
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::default();
+    let mut app = App::new(cli_args);
     let res = app.run(&mut terminal);
 
     disable_raw_mode()?;

@@ -2310,6 +2310,7 @@ dependencies = [
 name = "jpdb"
 version = "0.1.0"
 dependencies = [
+ "argh",
  "crossterm",
  "dang",
  "env_logger",
