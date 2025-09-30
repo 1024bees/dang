@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use nucleo_matcher::{Config, Matcher, Utf32Str};
+use nucleo_matcher::{
+    pattern::{AtomKind, CaseMatching, Normalization, Pattern},
+    Config, Matcher, Utf32Str,
+};
 use wellen::{
     simple::{read as waveread, Waveform},
     Time, TimeTableIdx, Var, WellenError,
@@ -53,17 +56,24 @@ impl WaveformTracker {
     }
 
     pub fn fuzzy_match_var(&mut self, query: &str) -> Vec<(Var, String)> {
-        let mut query_buf = Vec::new();
-        let q = Utf32Str::new(query, &mut query_buf);
+        // Use the pattern API for proper normalization and matching
+        let pattern = Pattern::new(
+            query,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+        );
 
-        let mut scored: Vec<(u16, usize)> = self
+        let mut scored: Vec<(u32, usize)> = self
             .cached_vars
             .iter()
             .enumerate()
             .filter_map(|(idx, (_, name))| {
                 let mut name_buf = Vec::new();
-                let cand = Utf32Str::new(name, &mut name_buf);
-                self.matcher.fuzzy_match(cand, q).map(|score| (score, idx))
+                let haystack = Utf32Str::new(name, &mut name_buf);
+                pattern
+                    .score(haystack, &mut self.matcher)
+                    .map(|score| (score, idx))
             })
             .collect();
 

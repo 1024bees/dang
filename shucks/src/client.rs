@@ -311,7 +311,7 @@ impl Client {
         Ok(())
     }
 
-    fn send_command_parsed(
+    pub fn send_command_parsed(
         &mut self,
         packet: Packet,
     ) -> Result<GdbResponse, Box<dyn std::error::Error>> {
@@ -414,14 +414,13 @@ impl Client {
     }
 
     pub fn get_time_idx(&mut self) -> Result<u64, Box<dyn std::error::Error>> {
-        return Ok(35);
         if let Some(time_idx) = self.cached_state.time_idx {
             return Ok(time_idx);
         }
 
         let rv = self
             .send_monitor_command("time_idx")
-            .inspect(|val| println!("{val}"))
+            
             .map(|output| output.trim().parse::<u64>().map_err(|e| e.into()))?;
 
         rv
@@ -442,7 +441,15 @@ impl Client {
         let response = self.send_command_parsed(monitor_packet)?;
 
         match response {
-            crate::response::GdbResponse::MonitorOutput { output } => Ok(output),
+            crate::response::GdbResponse::MonitorOutput { output } => {
+                // Monitor commands send an OK packet after the output
+                // We need to consume it to keep the response buffer clean
+                let ok_response = self.pop_response()?;
+                if ok_response != crate::response::GdbResponse::Ok {
+                    log::warn!("Expected OK after monitor output, got: {ok_response}");
+                }
+                Ok(output)
+            }
             other => Err(format!("Expected monitor output, got: {other}").into()),
         }
     }
@@ -1070,6 +1077,47 @@ mod tests {
         }
 
         assert!(time_idx_output.is_ok());
+
+        // Kill the handle by not waiting for it to complete
+        drop(handle);
+    }
+
+    #[test]
+    fn test_time_idx_then_pc() {
+        crate::init_test_logger();
+        let (listener, port) = create_test_listener();
+
+        // Start dang GDB stub in a separate thread
+        let handle = start_dang_instance(listener);
+
+        // Give the server time to start
+        sleep(Duration::from_millis(1000));
+
+        // Connect with the client to actual dang instance
+        let mut client = Client::new_with_port(port);
+        sleep(Duration::from_millis(200)); // Increased delay for stability
+
+        client
+            .initialize_gdb_session()
+            .expect("failed to init gdb session for time_idx_then_pc test");
+        sleep(Duration::from_millis(100)); // Increased delay for stability
+
+        // Call get_time_idx first
+        let time_idx = client.get_time_idx().expect("Failed to get time_idx");
+        log::info!("Got time_idx: {}", time_idx);
+
+        // Now try to get PC multiple times
+        for i in 0..3 {
+            match client.get_current_pc() {
+                Ok(pc) => {
+                    log::info!("PC attempt {}: 0x{:x}", i + 1, pc.as_u32());
+                    assert!(pc.nz(), "PC should be non-zero");
+                }
+                Err(e) => {
+                    panic!("Failed to get PC on attempt {} after get_time_idx: {:?}", i + 1, e);
+                }
+            }
+        }
 
         // Kill the handle by not waiting for it to complete
         drop(handle);
