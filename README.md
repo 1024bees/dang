@@ -17,7 +17,7 @@ to get started
 * the elf file that is being executed in the waveform
 
 ```bash
-jpdb test_data/ibex/sim.fst --mapping-path test_data/ibex/signal_get.py
+jpdb test_data/ibex/sim.fst --mapping-path test_data/ibex/signal_get.py --elf test_data/ibex/hello_test.elf
 ```
 ### requirements
 
