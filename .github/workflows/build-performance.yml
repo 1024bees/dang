@@ -1,0 +1,191 @@
+name: Build Performance Regression
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-C debuginfo=0"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark-build:
+    name: Benchmark Build Performance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install hyperfine
+        run: |
+          wget https://github.com/sharkdp/hyperfine/releases/download/v1.18.0/hyperfine_1.18.0_amd64.deb
+          sudo dpkg -i hyperfine_1.18.0_amd64.deb
+
+      - name: Clean build artifacts
+        run: cargo clean
+
+      - name: Warm up cache (download dependencies)
+        run: cargo fetch
+
+      - name: Benchmark full clean build
+        run: |
+          hyperfine --warmup 1 --runs 3 \
+            --export-json build-performance-clean.json \
+            --export-markdown build-performance-clean.md \
+            'cargo build --workspace --release'
+
+      - name: Clean for incremental test
+        run: cargo clean
+
+      - name: Initial build for incremental test
+        run: cargo build --workspace --release
+
+      - name: Touch a file to trigger incremental rebuild
+        run: touch dang/src/lib.rs || touch jpdb/src/main.rs || echo "// rebuild" >> Cargo.toml
+
+      - name: Benchmark incremental build
+        run: |
+          hyperfine --warmup 1 --runs 5 \
+            --export-json build-performance-incremental.json \
+            --export-markdown build-performance-incremental.md \
+            'cargo build --workspace --release'
+
+      - name: Measure workspace size
+        run: |
+          echo "### Build Artifacts Size" > build-size.md
+          echo "\`\`\`" >> build-size.md
+          du -sh target/release >> build-size.md
+          echo "\`\`\`" >> build-size.md
+
+      - name: Generate build report
+        run: |
+          echo "# Build Performance Report" > build-report.md
+          echo "" >> build-report.md
+          echo "## Clean Build Performance" >> build-report.md
+          cat build-performance-clean.md >> build-report.md
+          echo "" >> build-report.md
+          echo "## Incremental Build Performance" >> build-report.md
+          cat build-performance-incremental.md >> build-report.md
+          echo "" >> build-report.md
+          cat build-size.md >> build-report.md
+          cat build-report.md
+
+      - name: Upload performance results
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-performance-results
+          path: |
+            build-performance-*.json
+            build-performance-*.md
+            build-report.md
+            build-size.md
+
+      - name: Download baseline performance data
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: build-performance.yml
+          branch: ${{ github.base_ref }}
+          name: build-performance-results
+          path: baseline
+
+      - name: Compare with baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "# Build Performance Comparison" > comparison.md
+          echo "" >> comparison.md
+
+          if [ -f baseline/build-performance-clean.json ]; then
+            BASELINE_TIME=$(jq -r '.results[0].mean' baseline/build-performance-clean.json)
+            CURRENT_TIME=$(jq -r '.results[0].mean' build-performance-clean.json)
+
+            # Calculate percentage difference
+            DIFF=$(echo "scale=2; (($CURRENT_TIME - $BASELINE_TIME) / $BASELINE_TIME) * 100" | bc)
+
+            echo "## Clean Build Time" >> comparison.md
+            echo "- **Baseline**: ${BASELINE_TIME}s" >> comparison.md
+            echo "- **Current**: ${CURRENT_TIME}s" >> comparison.md
+            echo "- **Difference**: ${DIFF}%" >> comparison.md
+            echo "" >> comparison.md
+
+            # Check for regression (more than 10% slower)
+            if (( $(echo "$DIFF > 10" | bc -l) )); then
+              echo "⚠️ **WARNING: Build time regression detected!**" >> comparison.md
+              echo "Clean build is ${DIFF}% slower than baseline." >> comparison.md
+            elif (( $(echo "$DIFF < -10" | bc -l) )); then
+              echo "✅ **Build time improved by ${DIFF}%!**" >> comparison.md
+            else
+              echo "✅ Build time is within acceptable range." >> comparison.md
+            fi
+          else
+            echo "No baseline data available for comparison." >> comparison.md
+          fi
+
+          cat comparison.md
+
+      - name: Upload comparison results
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-comparison
+          path: comparison.md
+
+      - name: Comment PR with results
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let comment = '## Build Performance Results\n\n';
+
+            try {
+              const report = fs.readFileSync('build-report.md', 'utf8');
+              comment += report;
+
+              if (fs.existsSync('comparison.md')) {
+                comment += '\n\n---\n\n';
+                const comparison = fs.readFileSync('comparison.md', 'utf8');
+                comment += comparison;
+              }
+            } catch (error) {
+              comment += 'Failed to read performance report.';
+            }
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  cargo-timings:
+    name: Cargo Build Timings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Clean build artifacts
+        run: cargo clean
+
+      - name: Build with timing information
+        run: cargo build --workspace --release --timings
+
+      - name: Upload cargo timing report
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-timing-report
+          path: target/cargo-timings/cargo-timing.html
